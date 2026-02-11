@@ -1,484 +1,425 @@
 ---
 name: langgraph-workflows
-description: Creating LangGraph workflows using StateGraph, adding nodes and edges, working with START/END nodes, and implementing conditional routing
+description: Understanding workflows vs agents, predetermined vs dynamic patterns, and orchestrator-worker patterns using the Send API
 language: python
 ---
 
 # langgraph-workflows (Python)
 
-# LangGraph Workflows
+---
+name: langgraph-workflows
+description: Understanding workflows vs agents, predetermined vs dynamic patterns, and orchestrator-worker patterns using the Send API
+---
 
 ## Overview
 
-LangGraph workflows are built using the StateGraph API, which provides a declarative way to define agent execution flow through nodes and edges. This guide covers creating graphs, adding nodes and edges, and implementing conditional routing.
+LangGraph supports both **workflows** (predetermined paths) and **agents** (dynamic decision-making). Understanding when to use each pattern is crucial for effective agent design.
 
-## Creating Graphs with StateGraph
+**Key Distinctions:**
+- **Workflows**: Predetermined code paths, operate in specific order
+- **Agents**: Dynamic, define their own processes and tool usage
+- **Hybrid**: Combine deterministic and agentic steps
 
-### Basic StateGraph Creation
+## Decision Table: Workflow vs Agent
 
-```python
-from typing import TypedDict
-from langgraph.graph import StateGraph, START, END
+| Characteristic | Workflow | Agent | Hybrid |
+|----------------|----------|-------|--------|
+| **Control Flow** | Fixed, predetermined | Dynamic, model-driven | Mixed |
+| **Predictability** | High | Low | Medium |
+| **Complexity** | Simple | Complex | Variable |
+| **Use Case** | Sequential tasks | Open-ended problems | Structured flexibility |
+| **Examples** | ETL, validation | Research, QA | Review approval |
 
-class State(TypedDict):
-    messages: list[str]
-    counter: int
+## Key Patterns
 
-# Create a new graph with the state schema
-builder = StateGraph(State)
-```
+### 1. Predetermined Workflows
 
-### Using MessagesState for Chat Applications
+Sequential execution with fixed paths:
+- Data processing pipelines
+- Validation workflows
+- Multi-step transformations
 
-```python
-from langgraph.graph import MessagesState, StateGraph
+### 2. Dynamic Agents
 
-# MessagesState is a pre-built state with messages field
-builder = StateGraph(MessagesState)
-```
+Model decides next steps:
+- ReAct agents (reasoning + acting)
+- Tool-calling loops
+- Autonomous task completion
 
-## Adding Nodes
+### 3. Orchestrator-Worker Pattern
 
-Nodes are functions that perform work and return state updates.
+One coordinator delegates to multiple workers:
+- Map-reduce operations
+- Parallel processing
+- Multi-agent collaboration
 
-### Function Nodes
+## Code Examples
 
-```python
-def my_node(state: State) -> dict:
-    """Process state and return updates."""
-    return {
-        "messages": state["messages"] + ["New message"],
-        "counter": state["counter"] + 1
-    }
-
-# Add node by function reference (name is function name)
-builder.add_node(my_node)
-
-# Or specify custom name
-builder.add_node("custom_name", my_node)
-```
-
-### Async Nodes
-
-```python
-async def async_node(state: State) -> dict:
-    """Async nodes are fully supported."""
-    # Async operations
-    result = await some_async_operation()
-    return {"messages": [result]}
-
-builder.add_node("async_node", async_node)
-```
-
-### Accessing Config in Nodes
-
-```python
-from langgraph.types import RunnableConfig
-
-def node_with_config(state: State, config: RunnableConfig) -> dict:
-    """Access configuration like thread_id."""
-    thread_id = config.get("configurable", {}).get("thread_id")
-    return {"messages": [f"Thread: {thread_id}"]}
-```
-
-## Adding Edges
-
-Edges define the flow between nodes.
-
-### START and END Nodes
-
-```python
-from langgraph.graph import START, END
-
-# START: Entry point to the graph
-builder.add_edge(START, "first_node")
-
-# END: Terminal node, graph stops here
-builder.add_edge("last_node", END)
-```
-
-**Important**: `START` and `END` are constants, not strings!
-
-```python
-# ✅ Correct
-builder.add_edge(START, "node")
-builder.add_edge("node", END)
-
-# ❌ Wrong - creates nodes named "START" and "END"
-builder.add_edge("START", "node")
-builder.add_edge("node", "END")
-```
-
-### Fixed Edges
-
-```python
-# Simple edge from node_a to node_b
-builder.add_edge("node_a", "node_b")
-
-# Chain multiple edges
-builder.add_edge(START, "step_1")
-builder.add_edge("step_1", "step_2")
-builder.add_edge("step_2", "step_3")
-builder.add_edge("step_3", END)
-```
-
-### Parallel Edges (Fan-out)
-
-```python
-# From one node to multiple nodes (parallel execution)
-builder.add_edge(START, "fetch_data")
-builder.add_edge("fetch_data", "process_a")
-builder.add_edge("fetch_data", "process_b")
-builder.add_edge("fetch_data", "process_c")
-
-# All three process nodes run in parallel
-builder.add_edge("process_a", "combine")
-builder.add_edge("process_b", "combine")
-builder.add_edge("process_c", "combine")
-```
-
-## Conditional Edges
-
-Conditional edges enable dynamic routing based on state.
-
-### Basic Conditional Routing
-
-```python
-from typing import Literal
-
-def router(state: State) -> Literal["path_a", "path_b", END]:
-    """Route based on state condition."""
-    if state["counter"] > 10:
-        return END
-    elif state["counter"] > 5:
-        return "path_a"
-    else:
-        return "path_b"
-
-# Add conditional edge
-builder.add_conditional_edges(
-    "decision_node",  # Source node
-    router,           # Routing function
-)
-```
-
-### Conditional Edges with Path Map
-
-```python
-def should_continue(state: State) -> str:
-    """Return string key for path mapping."""
-    if state["counter"] >= 10:
-        return "finish"
-    return "continue"
-
-# Map routing function outputs to node names
-builder.add_conditional_edges(
-    "check_node",
-    should_continue,
-    {
-        "continue": "process_more",
-        "finish": END
-    }
-)
-```
-
-### Multiple Conditions
-
-```python
-def complex_router(state: State) -> str:
-    """Route to different paths based on multiple conditions."""
-    if state.get("error"):
-        return "handle_error"
-    elif state["counter"] > 100:
-        return "finish"
-    elif len(state["messages"]) == 0:
-        return "initialize"
-    else:
-        return "process"
-
-builder.add_conditional_edges(
-    "dispatcher",
-    complex_router,
-    {
-        "handle_error": "error_handler",
-        "finish": END,
-        "initialize": "init_node",
-        "process": "main_processor"
-    }
-)
-```
-
-## Using Command for Control Flow
-
-The `Command` object combines state updates and routing in one return value.
-
-```python
-from langgraph.types import Command
-from typing import Literal
-
-def node_with_command(state: State) -> Command[Literal["node_b", "node_c"]]:
-    """Return Command to update state AND route."""
-    new_counter = state["counter"] + 1
-    
-    # Decide next node based on logic
-    if new_counter > 5:
-        next_node = "node_b"
-    else:
-        next_node = "node_c"
-    
-    # Return Command with update and goto
-    return Command(
-        update={"counter": new_counter, "messages": ["Updated"]},
-        goto=next_node
-    )
-
-# When using Command, specify possible destinations with ends
-builder.add_node("node_a", node_with_command)
-builder.add_node("node_b", lambda s: {"messages": ["Path B"]})
-builder.add_node("node_c", lambda s: {"messages": ["Path C"]})
-builder.add_edge(START, "node_a")
-```
-
-## Complete Workflow Examples
-
-### Linear Workflow
+### Basic Workflow (Predetermined)
 
 ```python
 from langgraph.graph import StateGraph, START, END
-from typing import TypedDict
+from typing_extensions import TypedDict
 
-class State(TypedDict):
-    input: str
-    result: str
+class WorkflowState(TypedDict):
+    data: str
+    validated: bool
+    processed: bool
 
-def step_1(state: State):
-    return {"result": f"Step 1: {state['input']}"}
+def validate(state: WorkflowState) -> dict:
+    """Validate input data."""
+    is_valid = len(state["data"]) > 0
+    return {"validated": is_valid}
 
-def step_2(state: State):
-    return {"result": state["result"] + " -> Step 2"}
-
-def step_3(state: State):
-    return {"result": state["result"] + " -> Step 3"}
-
-# Build linear workflow
-workflow = StateGraph(State)
-workflow.add_node("step_1", step_1)
-workflow.add_node("step_2", step_2)
-workflow.add_node("step_3", step_3)
-
-workflow.add_edge(START, "step_1")
-workflow.add_edge("step_1", "step_2")
-workflow.add_edge("step_2", "step_3")
-workflow.add_edge("step_3", END)
-
-graph = workflow.compile()
-result = graph.invoke({"input": "Hello", "result": ""})
-print(result["result"])
-# Step 1: Hello -> Step 2 -> Step 3
-```
-
-### Branching Workflow with Loops
-
-```python
-from typing import TypedDict, Literal
-
-class LoopState(TypedDict):
-    count: int
-    max_iterations: int
-    results: list[str]
-
-def process(state: LoopState):
+def process(state: WorkflowState) -> dict:
+    """Process validated data."""
     return {
-        "count": state["count"] + 1,
-        "results": state["results"] + [f"Iteration {state['count']}"]
+        "data": state["data"].upper(),
+        "processed": True
     }
 
-def should_continue(state: LoopState) -> Literal["process", "end"]:
-    if state["count"] >= state["max_iterations"]:
-        return "end"
-    return "process"
-
-# Build looping workflow
-workflow = StateGraph(LoopState)
-workflow.add_node("process", process)
-
-workflow.add_edge(START, "process")
-workflow.add_conditional_edges(
-    "process",
-    should_continue,
-    {
-        "process": "process",  # Loop back to itself
-        "end": END
-    }
+# Fixed workflow: validate → process
+workflow = (
+    StateGraph(WorkflowState)
+    .add_node("validate", validate)
+    .add_node("process", process)
+    .add_edge(START, "validate")
+    .add_edge("validate", "process")  # Always go to process
+    .add_edge("process", END)
+    .compile()
 )
 
-graph = workflow.compile()
-result = graph.invoke({
-    "count": 0,
-    "max_iterations": 3,
-    "results": []
-})
-print(result["results"])
-# ['Iteration 0', 'Iteration 1', 'Iteration 2']
+result = workflow.invoke({"data": "hello"})
+print(result)  # {'data': 'HELLO', 'validated': True, 'processed': True}
 ```
 
-### Multi-Agent Workflow
+### Dynamic Agent (Model-Driven)
 
 ```python
-from typing import TypedDict, Literal
+from langchain.tools import tool
+from langchain.chat_models import init_chat_model
+from langchain.messages import SystemMessage, ToolMessage
+from langgraph.graph import StateGraph, START, END
+from typing import Annotated
+import operator
+
+@tool
+def search(query: str) -> str:
+    """Search for information."""
+    return f"Results for: {query}"
+
+@tool
+def calculate(expression: str) -> str:
+    """Calculate a mathematical expression."""
+    return str(eval(expression))
 
 class AgentState(TypedDict):
-    messages: list[str]
-    current_agent: str
-    task_complete: bool
+    messages: Annotated[list, operator.add]
 
-def researcher(state: AgentState):
-    return {
-        "messages": state["messages"] + ["Research complete"],
-        "current_agent": "writer"
-    }
+model = init_chat_model("claude-sonnet-4-5-20250929")
+tools = [search, calculate]
+model_with_tools = model.bind_tools(tools)
 
-def writer(state: AgentState):
-    return {
-        "messages": state["messages"] + ["Draft written"],
-        "current_agent": "reviewer"
-    }
+def agent_node(state: AgentState) -> dict:
+    """Agent decides which tool to use (if any)."""
+    response = model_with_tools.invoke(state["messages"])
+    return {"messages": [response]}
 
-def reviewer(state: AgentState):
-    return {
-        "messages": state["messages"] + ["Review complete"],
-        "task_complete": True
-    }
+def tool_node(state: AgentState) -> dict:
+    """Execute tools chosen by agent."""
+    tools_by_name = {tool.name: tool for tool in tools}
+    result = []
+    
+    for tool_call in state["messages"][-1].tool_calls:
+        tool = tools_by_name[tool_call["name"]]
+        observation = tool.invoke(tool_call["args"])
+        result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+    
+    return {"messages": result}
 
-def route_agent(state: AgentState) -> Literal["researcher", "writer", "reviewer", "end"]:
-    if state["task_complete"]:
-        return "end"
-    return state["current_agent"]
+def should_continue(state: AgentState):
+    """Dynamic: agent decides if it needs more tools."""
+    if state["messages"][-1].tool_calls:
+        return "tools"
+    return END
 
-# Build multi-agent workflow
-workflow = StateGraph(AgentState)
-workflow.add_node("researcher", researcher)
-workflow.add_node("writer", writer)
-workflow.add_node("reviewer", reviewer)
-
-workflow.add_edge(START, "researcher")
-workflow.add_conditional_edges(
-    "researcher",
-    route_agent,
-    {"writer": "writer", "end": END}
+# Dynamic agent: model decides when to stop
+agent = (
+    StateGraph(AgentState)
+    .add_node("agent", agent_node)
+    .add_node("tools", tool_node)
+    .add_edge(START, "agent")
+    .add_conditional_edges("agent", should_continue)  # Model decides
+    .add_edge("tools", "agent")
+    .compile()
 )
-workflow.add_conditional_edges(
-    "writer",
-    route_agent,
-    {"reviewer": "reviewer", "end": END}
+```
+
+### Orchestrator-Worker Pattern
+
+```python
+from langgraph.types import Send
+from typing import Annotated
+import operator
+
+class OrchestratorState(TypedDict):
+    tasks: list[str]
+    results: Annotated[list, operator.add]
+
+def orchestrator(state: OrchestratorState):
+    """Fan out tasks to workers."""
+    return [
+        Send("worker", {"task": task})
+        for task in state["tasks"]
+    ]
+
+def worker(state: dict) -> dict:
+    """Individual worker processes one task."""
+    task = state["task"]
+    result = f"Completed: {task}"
+    return {"results": [result]}
+
+def synthesize(state: OrchestratorState) -> dict:
+    """Combine worker outputs."""
+    summary = f"Processed {len(state['results'])} tasks"
+    return {"summary": summary}
+
+graph = (
+    StateGraph(OrchestratorState)
+    .add_node("worker", worker)
+    .add_node("synthesize", synthesize)
+    .add_conditional_edges(START, orchestrator, ["worker"])
+    .add_edge("worker", "synthesize")
+    .add_edge("synthesize", END)
+    .compile()
 )
-workflow.add_conditional_edges(
-    "reviewer",
-    route_agent,
-    {"end": END}
+
+result = graph.invoke({
+    "tasks": ["Task A", "Task B", "Task C"]
+})
+print(result["summary"])  # "Processed 3 tasks"
+```
+
+### Hybrid: Workflow with Agent Step
+
+```python
+class HybridState(TypedDict):
+    input: str
+    validated: bool
+    agent_response: str
+    finalized: bool
+
+def validate(state: HybridState) -> dict:
+    """Fixed validation step."""
+    return {"validated": True}
+
+def agent_process(state: HybridState) -> dict:
+    """Dynamic: agent decides how to process."""
+    # Agent logic here
+    response = f"Agent processed: {state['input']}"
+    return {"agent_response": response}
+
+def finalize(state: HybridState) -> dict:
+    """Fixed finalization step."""
+    return {"finalized": True}
+
+# Hybrid: validate → agent → finalize
+hybrid = (
+    StateGraph(HybridState)
+    .add_node("validate", validate)      # Workflow
+    .add_node("agent", agent_process)    # Agent
+    .add_node("finalize", finalize)      # Workflow
+    .add_edge(START, "validate")
+    .add_edge("validate", "agent")
+    .add_edge("agent", "finalize")
+    .add_edge("finalize", END)
+    .compile()
+)
+```
+
+### Map-Reduce Example
+
+```python
+class MapReduceState(TypedDict):
+    documents: list[str]
+    summaries: Annotated[list, operator.add]
+    final_summary: str
+
+def map_documents(state: MapReduceState):
+    """Map: send each document to a worker."""
+    return [
+        Send("summarize", {"doc": doc})
+        for doc in state["documents"]
+    ]
+
+def summarize(state: dict) -> dict:
+    """Worker: summarize one document."""
+    doc = state["doc"]
+    summary = f"Summary of: {doc[:50]}..."
+    return {"summaries": [summary]}
+
+def reduce(state: MapReduceState) -> dict:
+    """Reduce: combine all summaries."""
+    final = " | ".join(state["summaries"])
+    return {"final_summary": final}
+
+graph = (
+    StateGraph(MapReduceState)
+    .add_node("summarize", summarize)
+    .add_node("reduce", reduce)
+    .add_conditional_edges(START, map_documents, ["summarize"])
+    .add_edge("summarize", "reduce")
+    .add_edge("reduce", END)
+    .compile()
 )
 
-graph = workflow.compile()
+result = graph.invoke({
+    "documents": ["Doc 1 content...", "Doc 2 content...", "Doc 3 content..."]
+})
 ```
 
-## What You Can Do
-
-✅ **Create linear workflows** with sequential node execution  
-✅ **Build branching workflows** with conditional routing  
-✅ **Implement loops** by routing back to previous nodes  
-✅ **Execute nodes in parallel** with fan-out/fan-in patterns  
-✅ **Use async nodes** for concurrent operations  
-✅ **Combine control flow and state updates** with Command  
-✅ **Chain multiple graphs** by invoking graphs from nodes  
-
-## What You Cannot Do
-
-❌ **Modify graph after compilation**: Structure is fixed once compiled  
-❌ **Create cycles without conditions**: Must have exit condition  
-❌ **Add edges to non-existent nodes**: All nodes must be added first  
-❌ **Use node names that conflict with START/END**: These are reserved  
-❌ **Access nodes directly**: Use edges to connect nodes  
-
-## Common Gotchas
-
-### 1. **Using Strings Instead of START/END Constants**
+### Parallel Knowledge Base Router
 
 ```python
-from langgraph.graph import START, END
+from langgraph.types import Send
 
-# ❌ Wrong - creates nodes with these names
-builder.add_edge("START", "node1")
+class RouterState(TypedDict):
+    query: str
+    sources: list[str]
+    results: Annotated[list, operator.add]
 
-# ✅ Correct - uses special constants
-builder.add_edge(START, "node1")
+def classify(state: RouterState) -> dict:
+    """Determine which sources to query."""
+    query = state["query"].lower()
+    sources = []
+    
+    if "code" in query:
+        sources.append("github")
+    if "doc" in query:
+        sources.append("notion")
+    if "message" in query:
+        sources.append("slack")
+    
+    return {"sources": sources}
+
+def route_to_sources(state: RouterState):
+    """Fan out to relevant sources."""
+    return [
+        Send(source, {"query": state["query"]})
+        for source in state["sources"]
+    ]
+
+def query_github(state: dict) -> dict:
+    return {"results": [f"GitHub: {state['query']}"]}
+
+def query_notion(state: dict) -> dict:
+    return {"results": [f"Notion: {state['query']}"]}
+
+def query_slack(state: dict) -> dict:
+    return {"results": [f"Slack: {state['query']}"]}
+
+def synthesize(state: RouterState) -> dict:
+    return {"final": " + ".join(state["results"])}
+
+graph = (
+    StateGraph(RouterState)
+    .add_node("classify", classify)
+    .add_node("github", query_github)
+    .add_node("notion", query_notion)
+    .add_node("slack", query_slack)
+    .add_node("synthesize", synthesize)
+    .add_edge(START, "classify")
+    .add_conditional_edges("classify", route_to_sources)
+    .add_edge("github", "synthesize")
+    .add_edge("notion", "synthesize")
+    .add_edge("slack", "synthesize")
+    .add_edge("synthesize", END)
+    .compile()
+)
 ```
 
-### 2. **Forgetting to Add Nodes Before Edges**
+## Boundaries
+
+### What You CAN Configure
+
+✅ Choose workflow vs agent pattern
+✅ Mix deterministic and agentic steps
+✅ Use Send API for parallel execution
+✅ Define custom orchestrator logic
+✅ Control worker node behavior
+✅ Aggregate results with reducers
+
+### What You CANNOT Configure
+
+❌ Change Send API message-passing model
+❌ Bypass worker state isolation
+❌ Modify parallel execution mechanism
+❌ Override reducer behavior at runtime
+
+## Gotchas
+
+### 1. Send Requires Worker State Isolation
 
 ```python
-# ❌ Wrong order - edge to non-existent node
-builder.add_edge(START, "my_node")
-builder.add_node("my_node", my_function)  # Too late!
+# ❌ WRONG - Workers share state, causing conflicts
+class State(TypedDict):
+    shared_counter: int  # All workers modify same counter!
 
-# ✅ Correct order
-builder.add_node("my_node", my_function)
-builder.add_edge(START, "my_node")
+# ✅ CORRECT - Each worker gets isolated input
+def worker(state: dict) -> dict:
+    # state is isolated to this worker
+    return {"results": [process(state["task"])]}
 ```
 
-### 3. **Conditional Routing Return Type Mismatch**
+### 2. Send Needs Accumulator Reducer
 
 ```python
-# ❌ Returns bool instead of string
-def bad_router(state):
-    return state["counter"] > 5  # Returns True/False
+# ❌ WRONG - Last worker overwrites all others
+class State(TypedDict):
+    results: list  # No reducer!
 
-# ✅ Returns string matching path map
-def good_router(state):
-    if state["counter"] > 5:
-        return "path_a"
-    return "path_b"
+# ✅ CORRECT - Use Annotated with operator.add
+from typing import Annotated
+import operator
+
+class State(TypedDict):
+    results: Annotated[list, operator.add]  # Accumulates
 ```
 
-### 4. **Infinite Loops Without Exit**
+### 3. Workflows Can Become Too Rigid
 
 ```python
-# ❌ No exit condition - infinite loop!
-def always_continue(state):
+# ❌ ANTI-PATTERN - Overly rigid workflow
+# What if validation fails? No recovery path!
+.add_edge("validate", "process")  # Always proceeds
+
+# ✅ BETTER - Add conditional logic
+def route_after_validate(state):
+    if not state["validated"]:
+        return "error_handler"
     return "process"
 
-builder.add_conditional_edges("process", always_continue, {"process": "process"})
-
-# ✅ Has exit condition
-def conditional_continue(state):
-    if state["counter"] >= 10:
-        return "end"
-    return "process"
-
-builder.add_conditional_edges(
-    "process",
-    conditional_continue,
-    {"process": "process", "end": END}
-)
+.add_conditional_edges("validate", route_after_validate)
 ```
 
-### 5. **Not Compiling Before Use**
+### 4. Agents Can Become Unpredictable
 
 ```python
-builder = StateGraph(State)
-# ... add nodes and edges ...
+# ❌ RISKY - Pure agent, no guardrails
+# Agent might loop forever or make bad choices
 
-# ❌ Can't invoke builder
-# result = builder.invoke({"input": "data"})
-
-# ✅ Must compile first
-graph = builder.compile()
-result = graph.invoke({"input": "data"})
+# ✅ BETTER - Hybrid with constraints
+def should_continue(state):
+    # Add max iterations check
+    if state["iterations"] > 10:
+        return END
+    if state["messages"][-1].tool_calls:
+        return "tools"
+    return END
 ```
 
-## Related Documentation
+## Links
 
-- [LangGraph Overview](/langgraph-overview/) - Core concepts and fundamentals
-- [LangGraph State Management](/langgraph-state-management/) - State schemas and reducers
-- [LangGraph Graph API](/langgraph-graph-api/) - Compilation and execution
-- [Official Docs - Graph API](https://python.langchain.com/docs/langgraph/concepts/graph_api)
-- [Official Docs - Conditional Edges](https://python.langchain.com/docs/langgraph/how-tos/branching)
+- [Workflows and Agents (Python)](https://docs.langchain.com/oss/python/langgraph/workflows-agents)
+- [Send API Guide](https://docs.langchain.com/oss/python/langgraph/use-graph-api#map-reduce-and-the-send-api)
+- [Map-Reduce Example](https://docs.langchain.com/oss/python/langgraph/use-graph-api#map-reduce-and-the-send-api)

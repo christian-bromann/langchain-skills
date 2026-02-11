@@ -1,79 +1,90 @@
 ---
 name: langchain-agents
-description: Create and configure LangChain agents using create_agent, including tool selection, agent loops, stopping conditions, and middleware integration for Python.
+description: Create and use LangChain agents with create_agent - includes agent loops, ReAct pattern, tool execution, and state management
 language: python
 ---
 
 # langchain-agents (Python)
 
----
-name: langchain-agents
-description: Create and configure LangChain agents using create_agent, including tool selection, agent loops, stopping conditions, and middleware integration for Python.
-language: python
----
-
-# LangChain Agents (Python)
-
 ## Overview
 
-Agents combine language models with tools to create systems that can reason about tasks, decide which tools to use, and iteratively work towards solutions. `create_agent()` provides a production-ready agent implementation built on LangGraph.
+Agents combine language models with tools to create systems that can reason about tasks, decide which tools to use, and iteratively work towards solutions. The `create_agent()` function provides a production-ready agent implementation built on LangGraph.
 
-**Key concepts:**
-- An agent runs in a loop: **model → tools → model → finish**
-- The agent stops when the model emits a final output or reaches an iteration limit
-- Agents are graph-based, with nodes (model, tools, middleware) and edges defining flow
-- Middleware provides powerful customization at each execution stage
+**Key Concepts:**
+- **Agent Loop**: The model decides → calls tools → observes results → repeats until done
+- **ReAct Pattern**: Reasoning and Acting - the agent reasons about what to do, then acts by calling tools
+- **Graph-based Runtime**: Agents run on a LangGraph graph with nodes (model, tools, middleware) and edges
+
+## When to Use Agents
+
+| Scenario | Use Agent? | Why |
+|----------|-----------|-----|
+| Need to call external APIs/databases | ✅ Yes | Agents can dynamically choose which tools to call |
+| Multi-step task with decision points | ✅ Yes | Agent loop handles iterative reasoning |
+| Simple prompt-response | ❌ No | Use a chat model directly |
+| Predetermined workflow | ❌ No | Use LangGraph workflow instead |
+| Need tool calling without iteration | ⚠️ Maybe | Consider using model.bind_tools() directly |
 
 ## Decision Tables
 
-### When to use create_agent vs custom LangGraph
+### Choosing Agent Configuration
 
-| Use Case | Use `create_agent()` | Build Custom Graph |
-|----------|-------------------|-------------------|
-| Standard tool-calling loop | ✅ Recommended | ❌ Unnecessary |
-| Need middleware hooks | ✅ Built-in support | ⚠️ Manual implementation |
-| Complex branching logic | ❌ Limited | ✅ Full control |
-| Multi-agent workflows | ❌ Not supported | ✅ Required |
-| Quick prototyping | ✅ Fast setup | ❌ More code |
+| Need | Configuration | Example |
+|------|---------------|---------|
+| Basic agent with tools | `create_agent(model, tools)` | Search, calculator, weather |
+| Custom system instructions | Add `system_prompt` | Domain-specific behavior |
+| Human approval for sensitive operations | Add `human_in_the_loop_middleware` | Database writes, emails |
+| Persistence across sessions | Add `checkpointer` | Multi-turn conversations |
+| Structured output format | Add `response_format` | Extract contact info, parse forms |
 
-### Choosing agent configuration
+### Tool Strategy
 
-| Requirement | Configuration | Example |
-|------------|--------------|---------|
-| Basic agent | Model + tools | `create_agent(model, tools)` |
-| Custom prompts | Add system_prompt | `system_prompt="You are..."` |
-| Human approval | Add HITL middleware | `middleware=[hitl_middleware()]` |
-| State persistence | Add checkpointer | `checkpointer=MemorySaver()` |
-| Dynamic behavior | Add custom middleware | `middleware=[custom_middleware]` |
+| Tool Type | When to Use | Example |
+|-----------|-------------|---------|
+| Static tools | Tools don't change during execution | Search, weather, calculator |
+| Dynamic tools | Tools depend on runtime state | User-specific APIs |
+| Built-in tools | Need common functionality | File system, code execution |
+| Custom tools | Domain-specific operations | Your business logic |
 
 ## Code Examples
 
-### Basic Agent Creation
+### Basic Agent with Tools
 
 ```python
 from langchain.agents import create_agent
 from langchain.tools import tool
 
-# Define tools
+# Define tools using @tool decorator
 @tool
 def search(query: str) -> str:
-    """Search for information."""
+    """Search for information on the web.
+    
+    Args:
+        query: The search query
+    """
+    # Your search implementation
     return f"Results for: {query}"
 
 @tool
 def get_weather(location: str) -> str:
-    """Get weather information for a location."""
+    """Get current weather for a location.
+    
+    Args:
+        location: City name
+    """
     return f"Weather in {location}: Sunny, 72°F"
 
 # Create agent
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search, get_weather]
+    model="gpt-4.1",
+    tools=[search, get_weather],
 )
 
 # Invoke agent
 result = agent.invoke({
-    "messages": [{"role": "user", "content": "What's the weather in Boston?"}]
+    "messages": [
+        {"role": "user", "content": "What's the weather in San Francisco?"}
+    ]
 })
 
 print(result["messages"][-1].content)
@@ -85,21 +96,73 @@ print(result["messages"][-1].content)
 from langchain.agents import create_agent
 
 agent = create_agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search, calculator],
     system_prompt="""You are a helpful research assistant.
-Always cite your sources and explain your reasoning.
-If you're uncertain, say so clearly."""
+Always cite your sources when using the search tool.
+Show your work when performing calculations.""",
 )
-
-result = agent.invoke({
-    "messages": [
-        {"role": "user", "content": "What's the population of Tokyo?"}
-    ]
-})
 ```
 
-### Agent with Persistence (Checkpointer)
+### Agent Loop Execution Flow
+
+```python
+# The agent runs in a loop:
+# 1. Model receives user message
+# 2. Model decides to call a tool (or finish)
+# 3. Tool executes and returns result
+# 4. Result goes back to model
+# 5. Repeat until model decides to finish
+
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[search, get_weather],
+)
+
+# This single invoke() call handles the entire loop
+result = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": "Search for the capital of France, then get its weather"
+    }]
+})
+
+# Agent automatically:
+# - Calls search tool for capital
+# - Receives "Paris"
+# - Calls weather tool for Paris
+# - Receives weather data
+# - Responds with final answer
+```
+
+### Streaming Agent Progress
+
+```python
+from langchain.agents import create_agent
+
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[search],
+)
+
+# Stream with updates mode to see each step
+for mode, chunk in agent.stream(
+    {"messages": [{"role": "user", "content": "Search for LangChain"}]},
+    stream_mode=["updates"],
+):
+    print(f"Step: {chunk}")
+
+# Stream with messages mode for LLM tokens
+for mode, chunk in agent.stream(
+    {"messages": [{"role": "user", "content": "Search for LangChain"}]},
+    stream_mode=["messages"],
+):
+    token, metadata = chunk
+    if token.content:
+        print(token.content, end="", flush=True)
+```
+
+### Agent with Persistence
 
 ```python
 from langchain.agents import create_agent
@@ -108,323 +171,292 @@ from langgraph.checkpoint.memory import MemorySaver
 checkpointer = MemorySaver()
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search, get_weather],
-    checkpointer=checkpointer
+    model="gpt-4.1",
+    tools=[search],
+    checkpointer=checkpointer,
 )
 
 # First conversation
-config1 = {"configurable": {"thread_id": "conversation-1"}}
-agent.invoke(
-    {"messages": [{"role": "user", "content": "My name is Alice"}]},
-    config=config1
-)
+config = {"configurable": {"thread_id": "user-123"}}
+agent.invoke({
+    "messages": [{"role": "user", "content": "My name is Alice"}]
+}, config=config)
 
-# Continue conversation (agent remembers context)
-result = agent.invoke(
-    {"messages": [{"role": "user", "content": "What's my name?"}]},
-    config=config1
-)
-# Output: "Your name is Alice"
-```
-
-### Agent with Iteration Limits
-
-```python
-from langchain.agents import create_agent
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search],
-    max_iterations=5  # Stop after 5 model-tool cycles
-)
-
-# Agent will stop if it exceeds 5 iterations
+# Later conversation - agent remembers
 result = agent.invoke({
-    "messages": [
-        {"role": "user", "content": "Research everything about quantum computing"}
-    ]
+    "messages": [{"role": "user", "content": "What's my name?"}]
+}, config=config)
+# Response: "Your name is Alice"
+```
+
+### Multiple Tool Calls in Parallel
+
+```python
+# Models can call multiple tools simultaneously
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[get_weather, get_news],
+)
+
+result = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": "Get weather for NYC and latest news for SF"
+    }]
 })
+
+# Agent may call both tools in parallel in a single step
 ```
 
-### Agent with Dynamic Model Selection (Middleware)
+### Dynamic Tools (Runtime-Dependent)
 
 ```python
 from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
-from langchain_openai import ChatOpenAI
-from typing import Callable
 
-basic_model = ChatOpenAI(model="gpt-4o-mini")
-advanced_model = ChatOpenAI(model="gpt-4o")
-
-@wrap_model_call
-def dynamic_model_middleware(
-    request: ModelRequest,
-    handler: Callable[[ModelRequest], ModelResponse]
-) -> ModelResponse:
-    """Use advanced model for longer conversations."""
-    message_count = len(request.messages)
-    model = advanced_model if message_count > 10 else basic_model
-    
-    return handler(request.override(model=model))
+def get_tools(state):
+    """Tools can depend on current state."""
+    user_id = state.get("config", {}).get("configurable", {}).get("user_id")
+    return [
+        get_user_specific_tool(user_id),
+        common_tool,
+    ]
 
 agent = create_agent(
-    model="gpt-4o-mini",  # Default model
-    tools=[search, get_weather],
-    middleware=[dynamic_model_middleware]
+    model="gpt-4.1",
+    tools=get_tools,  # Pass function instead of list
 )
 ```
 
-### Streaming Agent Responses
+### Error Handling in Agents
 
 ```python
-from langchain.agents import create_agent
+from langchain.agents import create_agent, wrap_tool_call
 
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search]
-)
-
-# Stream agent progress
-for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Search for LangChain docs"}]},
-    stream_mode=["updates", "messages"]
-):
-    if mode == "messages":
-        token, metadata = chunk
-        if token.content:
-            print(token.content, end="", flush=True)  # Stream tokens
-    elif mode == "updates":
-        print(f"\nStep: {list(chunk.keys())[0]}")  # Track node transitions
-```
-
-### Agent with Tool Error Handling
-
-```python
-from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_tool_call
-from langchain_core.messages import ToolMessage
-
+# Custom error handling middleware
 @wrap_tool_call
-def error_handling_middleware(request, handler):
-    """Handle tool execution errors with custom messages."""
+async def error_handler(tool_call, handler):
     try:
-        return handler(request)
-    except Exception as e:
-        # Return custom error message to the model
-        return ToolMessage(
-            content=f"Tool failed: {str(e)}. Please try a different approach.",
-            tool_call_id=request.tool_call["id"]
-        )
+        return await handler(tool_call)
+    except Exception as error:
+        return {
+            **tool_call,
+            "content": f"Tool error: {str(error)}",
+        }
 
 agent = create_agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[risky_tool],
-    middleware=[error_handling_middleware]
+    middleware=[error_handler],
 )
 ```
 
-### Agent with Multiple Middleware
+### Tool with Type Hints
 
 ```python
-from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
-
-class LoggingMiddleware(AgentMiddleware):
-    def before_model(self, state):
-        print(f"[LOG] Model called with {len(state['messages'])} messages")
-    
-    def after_model(self, state):
-        last_msg = state["messages"][-1]
-        print(f"[LOG] Model response: {last_msg.content}")
-
-class MessageTrimmerMiddleware(AgentMiddleware):
-    def before_model(self, state):
-        # Keep only last 10 messages to avoid context overflow
-        if len(state["messages"]) > 10:
-            state["messages"] = state["messages"][-10:]
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search],
-    middleware=[LoggingMiddleware(), MessageTrimmerMiddleware()]
-)
-```
-
-### Using Coroutines for Async Tools
-
-```python
-from langchain.agents import create_agent
 from langchain.tools import tool
+from typing import Literal
 
 @tool
-async def async_search(query: str) -> str:
-    """Asynchronously search for information."""
-    # Simulated async operation
-    await asyncio.sleep(1)
-    return f"Async results for: {query}"
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[async_search]
-)
-
-# Use async invoke
-result = await agent.ainvoke({
-    "messages": [{"role": "user", "content": "Search for Python async"}]
-})
+def calculate(
+    operation: Literal["add", "subtract", "multiply", "divide"],
+    a: float,
+    b: float,
+) -> float:
+    """Perform a mathematical calculation.
+    
+    Args:
+        operation: The operation to perform
+        a: First number
+        b: Second number
+    """
+    if operation == "add":
+        return a + b
+    elif operation == "subtract":
+        return a - b
+    elif operation == "multiply":
+        return a * b
+    elif operation == "divide":
+        return a / b
 ```
 
 ## Boundaries
 
-### ✅ What Agents CAN Do
+### What Agents CAN Configure
 
-- **Run tool-calling loops**: Model decides which tools to call iteratively
-- **Handle multiple tools**: Agent selects appropriate tool(s) based on context
-- **Maintain conversation state**: With checkpointer, remember previous interactions
-- **Stream responses**: Real-time token and progress updates
-- **Apply middleware**: Custom logic at any execution stage
-- **Handle errors gracefully**: Retry, skip, or provide custom error messages
-- **Stop based on conditions**: Max iterations, time limits, or custom logic
-- **Support async operations**: Use coroutines for async tools and invocations
+✅ **Model**: Any chat model (OpenAI, Anthropic, Google, etc.)
+✅ **Tools**: Custom tools, built-in tools, dynamic tools
+✅ **System Prompt**: Instructions for agent behavior
+✅ **Middleware**: Human-in-the-loop, error handling, logging
+✅ **Checkpointer**: Memory/persistence across conversations
+✅ **Response Format**: Structured output schemas (Pydantic, TypedDict, JSON Schema)
+✅ **Max Iterations**: Prevent infinite loops
 
-### ❌ What Agents CANNOT Do
+### What Agents CANNOT Configure
 
-- **Execute arbitrary code without tools**: Tools must be pre-defined
-- **Access external state automatically**: Must use checkpointer or middleware
-- **Handle parallel agent orchestration**: Use LangGraph for multi-agent systems
-- **Guarantee deterministic outputs**: LLM responses vary
-- **Execute without a model**: At least one LLM must be configured
-- **Persist state without checkpointer**: Memory is lost between invocations
+❌ **Direct Graph Structure**: Use LangGraph directly for custom flows
+❌ **Tool Execution Order**: Model decides which tools to call
+❌ **Interrupt Model Decision**: Can only interrupt before tool execution
+❌ **Multiple Models**: One agent = one model (use subagents for multiple)
 
 ## Gotchas
 
-### 1. **Empty Tool List Removes Tool Calling**
+### 1. Agent Doesn't Stop (Infinite Loop)
 
 ```python
-# ❌ This creates an agent without tool-calling capability
+# ❌ Problem: No clear stopping condition
 agent = create_agent(
-    model="gpt-4o",
-    tools=[]  # No tools = no tool node in graph
+    model="gpt-4.1",
+    tools=[search],
 )
 
-# ✅ Provide at least one tool for tool-calling behavior
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Keep searching until perfect"}]
+})
+
+# ✅ Solution: Set max iterations
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search]
+    model="gpt-4.1",
+    tools=[search],
+    max_iterations=10,  # Stop after 10 tool calls
 )
 ```
 
-### 2. **Checkpointer Required for Persistence**
+### 2. Tool Not Being Called
 
 ```python
-# ❌ No checkpointer = state is lost between invocations
-agent = create_agent(model="gpt-4o", tools=[search])
-agent.invoke(
-    {"messages": [...]},
-    config={"configurable": {"thread_id": "1"}}
-)
-# State is NOT saved
+# ❌ Problem: Vague tool description
+@tool
+def bad_tool(input: str) -> str:
+    """Does stuff."""  # Too vague!
+    return "result"
 
-# ✅ Add checkpointer for persistence
+# ✅ Solution: Clear, specific descriptions
+@tool
+def web_search(query: str) -> str:
+    """Search the web for current information about a topic.
+    
+    Use this when you need recent data that wasn't in your training.
+    
+    Args:
+        query: The search query (2-10 words)
+    """
+    return "result"
+```
+
+### 3. State Not Persisting
+
+```python
+# ❌ Problem: No checkpointer
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[search],
+)
+
+# Each invoke is isolated - no memory
+agent.invoke({"messages": [{"role": "user", "content": "Hi, I'm Bob"}]})
+agent.invoke({"messages": [{"role": "user", "content": "What's my name?"}]})
+# Agent doesn't remember "Bob"
+
+# ✅ Solution: Add checkpointer and thread_id
 from langgraph.checkpoint.memory import MemorySaver
 
 agent = create_agent(
-    model="gpt-4o",
+    model="gpt-4.1",
     tools=[search],
-    checkpointer=MemorySaver()
+    checkpointer=MemorySaver(),
 )
+
+config = {"configurable": {"thread_id": "session-1"}}
+agent.invoke({"messages": [{"role": "user", "content": "Hi, I'm Bob"}]}, config=config)
+agent.invoke({"messages": [{"role": "user", "content": "What's my name?"}]}, config=config)
+# Agent remembers: "Your name is Bob"
 ```
 
-### 3. **Middleware Execution Order Matters**
+### 4. Messages vs State Confusion
 
 ```python
-# Middleware runs in the order provided
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search],
-    middleware=[
-        trim_messages_middleware,  # Runs FIRST (trims messages)
-        logging_middleware,        # Runs SECOND (logs trimmed messages)
-    ]
-)
+# Agent state includes more than just messages
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Hello"}]
+})
+
+# ✅ Access full conversation history
+print(result["messages"])  # List of all messages
+
+# ✅ Access structured output (if configured)
+print(result.get("structured_response"))
+
+# ❌ Don't try to access result.content directly
+# print(result.content)  # KeyError!
 ```
 
-### 4. **Stream Mode Must Be Explicitly Set**
+### 5. Tool Results Must Be Serializable
 
 ```python
-# ❌ Default stream mode may not show what you need
-for chunk in agent.stream({"messages": [...]}):
-    # Only shows state updates, not LLM tokens
-    pass
+from datetime import datetime
 
-# ✅ Specify stream modes explicitly
-for mode, chunk in agent.stream(
-    {"messages": [...]},
-    stream_mode=["updates", "messages"]  # Get both state and tokens
-):
-    # Handle different stream types
-    pass
-```
-
-### 5. **Model Must Support Tool Calling**
-
-```python
-# ❌ Not all models support tool calling
-agent = create_agent(
-    model="gpt-3.5-turbo-instruct",  # Text completion model, no tools
-    tools=[search]  # Won't work!
-)
-
-# ✅ Use a chat model with tool support
-agent = create_agent(
-    model="gpt-4o",  # Supports tool calling
-    tools=[search]
-)
-```
-
-### 6. **Thread IDs Must Be Consistent for Conversations**
-
-```python
-# ❌ Different thread IDs = different conversations
-agent.invoke(
-    {"messages": [...]},
-    config={"configurable": {"thread_id": "1"}}
-)
-agent.invoke(
-    {"messages": [...]},
-    config={"configurable": {"thread_id": "2"}}
-)
-# These are separate conversations!
-
-# ✅ Use the same thread ID for continuity
-config = {"configurable": {"thread_id": "my-conversation"}}
-agent.invoke({"messages": [...]}, config=config)
-agent.invoke({"messages": [...]}, config=config)  # Continues conversation
-```
-
-### 7. **Type Hints Required for Tool Parameters**
-
-```python
-# ❌ Missing type hints won't generate proper schema
+# ❌ Problem: Returning non-serializable objects
 @tool
-def search(query):  # No type hint!
-    """Search for information."""
-    return f"Results for: {query}"
+def bad_get_time() -> datetime:
+    """Get current time."""
+    return datetime.now()  # datetime objects need special handling
 
-# ✅ Always provide type hints
+# ✅ Solution: Return serializable data
 @tool
-def search(query: str) -> str:
-    """Search for information."""
-    return f"Results for: {query}"
+def good_get_time() -> str:
+    """Get current time."""
+    return datetime.now().isoformat()  # String is serializable
 ```
 
-## Links to Full Documentation
+### 6. Streaming Modes Matter
+
+```python
+# Different stream modes show different information
+
+# "values" - Full state after each step
+for mode, chunk in agent.stream(input, stream_mode=["values"]):
+    print(chunk["messages"])  # All messages so far
+
+# "updates" - Only what changed in each step
+for mode, chunk in agent.stream(input, stream_mode=["updates"]):
+    print(chunk)  # Just the delta
+
+# "messages" - LLM token stream
+for mode, chunk in agent.stream(input, stream_mode=["messages"]):
+    token, metadata = chunk
+    print(token.content, end="", flush=True)
+```
+
+### 7. Async Tools Must Be Awaited Properly
+
+```python
+from langchain.tools import tool
+
+# ✅ Async tool properly defined
+@tool
+async def async_search(query: str) -> str:
+    """Async search tool."""
+    # Use await for async operations
+    result = await some_async_api_call(query)
+    return result
+
+# Agent handles both sync and async tools
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[sync_tool, async_search],
+)
+
+# Use ainvoke for async execution
+result = await agent.ainvoke({
+    "messages": [{"role": "user", "content": "Search something"}]
+})
+```
+
+## Links to Documentation
 
 - [Agents Overview](https://docs.langchain.com/oss/python/langchain/agents)
 - [create_agent API Reference](https://docs.langchain.com/oss/python/releases/langchain-v1)
-- [Middleware Guide](https://docs.langchain.com/oss/python/langchain/middleware/custom)
-- [Tools Documentation](https://docs.langchain.com/oss/python/langchain/tools)
+- [LangGraph Concepts](https://docs.langchain.com/oss/python/langgraph/workflows-agents)
+- [Tool Calling Guide](https://docs.langchain.com/oss/python/langchain/tools)
 - [Streaming Guide](https://docs.langchain.com/oss/python/langchain/streaming/overview)
 - [Human-in-the-Loop](https://docs.langchain.com/oss/python/langchain/human-in-the-loop)

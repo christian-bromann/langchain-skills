@@ -1,509 +1,437 @@
 ---
 name: langgraph-workflows
-description: Creating LangGraph workflows using StateGraph, adding nodes and edges, working with START/END nodes, and implementing conditional routing
+description: Understanding workflows vs agents, predetermined vs dynamic patterns, and orchestrator-worker patterns using the Send API
 language: js
 ---
 
 # langgraph-workflows (JavaScript/TypeScript)
 
-# LangGraph Workflows
+---
+name: langgraph-workflows
+description: Understanding workflows vs agents, predetermined vs dynamic patterns, and orchestrator-worker patterns using the Send API
+---
 
 ## Overview
 
-LangGraph workflows are built using the StateGraph API, which provides a declarative way to define agent execution flow through nodes and edges. This guide covers creating graphs, adding nodes and edges, and implementing conditional routing.
+LangGraph supports both **workflows** (predetermined paths) and **agents** (dynamic decision-making). Understanding when to use each pattern is crucial for effective agent design.
 
-## Creating Graphs with StateGraph
+**Key Distinctions:**
+- **Workflows**: Predetermined code paths, operate in specific order
+- **Agents**: Dynamic, define their own processes and tool usage
+- **Hybrid**: Combine deterministic and agentic steps
 
-### Basic StateGraph Creation
+## Decision Table: Workflow vs Agent
+
+| Characteristic | Workflow | Agent | Hybrid |
+|----------------|----------|-------|--------|
+| **Control Flow** | Fixed, predetermined | Dynamic, model-driven | Mixed |
+| **Predictability** | High | Low | Medium |
+| **Complexity** | Simple | Complex | Variable |
+| **Use Case** | Sequential tasks | Open-ended problems | Structured flexibility |
+| **Examples** | ETL, validation | Research, QA | Review approval |
+
+## Key Patterns
+
+### 1. Predetermined Workflows
+
+Sequential execution with fixed paths:
+- Data processing pipelines
+- Validation workflows
+- Multi-step transformations
+
+### 2. Dynamic Agents
+
+Model decides next steps:
+- ReAct agents (reasoning + acting)
+- Tool-calling loops
+- Autonomous task completion
+
+### 3. Orchestrator-Worker Pattern
+
+One coordinator delegates to multiple workers:
+- Map-reduce operations
+- Parallel processing
+- Multi-agent collaboration
+
+## Code Examples
+
+### Basic Workflow (Predetermined)
 
 ```typescript
-import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { StateGraph, StateSchema, START, END } from "@langchain/langgraph";
+import { z } from "zod";
 
-const State = Annotation.Root({
-  messages: Annotation<string[]>({
-    reducer: (current, update) => current.concat(update),
-    default: () => [],
-  }),
-  counter: Annotation<number>({
-    default: () => 0,
-  }),
+const WorkflowState = new StateSchema({
+  data: z.string(),
+  validated: z.boolean(),
+  processed: z.boolean(),
 });
 
-// Create a new graph with the state schema
-const builder = new StateGraph(State);
-```
+const validate = async (state: typeof WorkflowState.State) => {
+  const isValid = state.data.length > 0;
+  return { validated: isValid };
+};
 
-### Using MessagesAnnotation for Chat Applications
-
-```typescript
-import { MessagesAnnotation, StateGraph } from "@langchain/langgraph";
-
-// MessagesAnnotation is a pre-built annotation with messages field
-const builder = new StateGraph(MessagesAnnotation);
-```
-
-## Adding Nodes
-
-Nodes are functions that perform work and return state updates.
-
-### Function Nodes
-
-```typescript
-const myNode = (state: typeof State.State) => {
+const process = async (state: typeof WorkflowState.State) => {
   return {
-    messages: ["New message"],
-    counter: state.counter + 1,
+    data: state.data.toUpperCase(),
+    processed: true,
   };
 };
 
-// Add node by function reference (name is function name)
-builder.addNode(myNode);
-
-// Or specify custom name
-builder.addNode("customName", myNode);
-```
-
-### Async Nodes
-
-```typescript
-const asyncNode = async (state: typeof State.State) => {
-  // Async operations are fully supported
-  const result = await someAsyncOperation();
-  return { messages: [result] };
-};
-
-builder.addNode("asyncNode", asyncNode);
-```
-
-### Accessing Config in Nodes
-
-```typescript
-import { RunnableConfig } from "@langchain/core/runnables";
-
-const nodeWithConfig = (
-  state: typeof State.State,
-  config: RunnableConfig
-) => {
-  const threadId = config?.configurable?.thread_id;
-  return { messages: [`Thread: ${threadId}`] };
-};
-```
-
-## Adding Edges
-
-Edges define the flow between nodes.
-
-### START and END Nodes
-
-```typescript
-import { START, END } from "@langchain/langgraph";
-
-// START: Entry point to the graph
-builder.addEdge(START, "firstNode");
-
-// END: Terminal node, graph stops here
-builder.addEdge("lastNode", END);
-```
-
-**Important**: `START` and `END` are constants, not strings!
-
-```typescript
-// ✅ Correct
-builder.addEdge(START, "node");
-builder.addEdge("node", END);
-
-// ❌ Wrong - creates nodes named "START" and "END"
-builder.addEdge("START", "node");
-builder.addEdge("node", "END");
-```
-
-### Fixed Edges
-
-```typescript
-// Simple edge from nodeA to nodeB
-builder.addEdge("nodeA", "nodeB");
-
-// Chain multiple edges
-builder
-  .addEdge(START, "step1")
-  .addEdge("step1", "step2")
-  .addEdge("step2", "step3")
-  .addEdge("step3", END);
-```
-
-### Parallel Edges (Fan-out)
-
-```typescript
-// From one node to multiple nodes (parallel execution)
-builder
-  .addEdge(START, "fetchData")
-  .addEdge("fetchData", "processA")
-  .addEdge("fetchData", "processB")
-  .addEdge("fetchData", "processC")
-  // All three process nodes run in parallel
-  .addEdge("processA", "combine")
-  .addEdge("processB", "combine")
-  .addEdge("processC", "combine");
-```
-
-## Conditional Edges
-
-Conditional edges enable dynamic routing based on state.
-
-### Basic Conditional Routing
-
-```typescript
-const router = (state: typeof State.State): "pathA" | "pathB" | typeof END => {
-  if (state.counter > 10) {
-    return END;
-  } else if (state.counter > 5) {
-    return "pathA";
-  } else {
-    return "pathB";
-  }
-};
-
-// Add conditional edge
-builder.addConditionalEdges(
-  "decisionNode",  // Source node
-  router           // Routing function
-);
-```
-
-### Conditional Edges with Path Map
-
-```typescript
-const shouldContinue = (state: typeof State.State): string => {
-  if (state.counter >= 10) {
-    return "finish";
-  }
-  return "continue";
-};
-
-// Map routing function outputs to node names
-builder.addConditionalEdges(
-  "checkNode",
-  shouldContinue,
-  {
-    continue: "processMore",
-    finish: END,
-  }
-);
-```
-
-### Multiple Conditions
-
-```typescript
-const complexRouter = (state: typeof State.State): string => {
-  if (state.error) {
-    return "handleError";
-  } else if (state.counter > 100) {
-    return "finish";
-  } else if (state.messages.length === 0) {
-    return "initialize";
-  } else {
-    return "process";
-  }
-};
-
-builder.addConditionalEdges(
-  "dispatcher",
-  complexRouter,
-  {
-    handleError: "errorHandler",
-    finish: END,
-    initialize: "initNode",
-    process: "mainProcessor",
-  }
-);
-```
-
-## Using Command for Control Flow
-
-The `Command` object combines state updates and routing in one return value.
-
-```typescript
-import { Command } from "@langchain/langgraph";
-
-const nodeWithCommand = (state: typeof State.State) => {
-  const newCounter = state.counter + 1;
-  
-  // Decide next node based on logic
-  const nextNode = newCounter > 5 ? "nodeB" : "nodeC";
-  
-  // Return Command with update and goto
-  return new Command({
-    update: { 
-      counter: newCounter, 
-      messages: ["Updated"] 
-    },
-    goto: nextNode,
-  });
-};
-
-// When using Command, specify possible destinations with ends
-builder
-  .addNode("nodeA", nodeWithCommand, { ends: ["nodeB", "nodeC"] })
-  .addNode("nodeB", (s) => ({ messages: ["Path B"] }))
-  .addNode("nodeC", (s) => ({ messages: ["Path C"] }))
-  .addEdge(START, "nodeA");
-```
-
-## Complete Workflow Examples
-
-### Linear Workflow
-
-```typescript
-import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
-
-const State = Annotation.Root({
-  input: Annotation<string>(),
-  result: Annotation<string>({ default: () => "" }),
-});
-
-const step1 = (state: typeof State.State) => {
-  return { result: `Step 1: ${state.input}` };
-};
-
-const step2 = (state: typeof State.State) => {
-  return { result: `${state.result} -> Step 2` };
-};
-
-const step3 = (state: typeof State.State) => {
-  return { result: `${state.result} -> Step 3` };
-};
-
-// Build linear workflow
-const workflow = new StateGraph(State)
-  .addNode("step1", step1)
-  .addNode("step2", step2)
-  .addNode("step3", step3)
-  .addEdge(START, "step1")
-  .addEdge("step1", "step2")
-  .addEdge("step2", "step3")
-  .addEdge("step3", END);
-
-const graph = workflow.compile();
-const result = await graph.invoke({ input: "Hello", result: "" });
-console.log(result.result);
-// Step 1: Hello -> Step 2 -> Step 3
-```
-
-### Branching Workflow with Loops
-
-```typescript
-import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
-
-const LoopState = Annotation.Root({
-  count: Annotation<number>({ default: () => 0 }),
-  maxIterations: Annotation<number>(),
-  results: Annotation<string[]>({
-    reducer: (curr, update) => curr.concat(update),
-    default: () => [],
-  }),
-});
-
-const process = (state: typeof LoopState.State) => {
-  return {
-    count: state.count + 1,
-    results: [`Iteration ${state.count}`],
-  };
-};
-
-const shouldContinue = (state: typeof LoopState.State): "process" | "end" => {
-  if (state.count >= state.maxIterations) {
-    return "end";
-  }
-  return "process";
-};
-
-// Build looping workflow
-const workflow = new StateGraph(LoopState)
+// Fixed workflow: validate → process
+const workflow = new StateGraph(WorkflowState)
+  .addNode("validate", validate)
   .addNode("process", process)
-  .addEdge(START, "process")
-  .addConditionalEdges("process", shouldContinue, {
-    process: "process",  // Loop back to itself
-    end: END,
-  });
+  .addEdge(START, "validate")
+  .addEdge("validate", "process")  // Always go to process
+  .addEdge("process", END)
+  .compile();
 
-const graph = workflow.compile();
+const result = await workflow.invoke({ data: "hello" });
+console.log(result);  // { data: 'HELLO', validated: true, processed: true }
+```
+
+### Dynamic Agent (Model-Driven)
+
+```typescript
+import { ChatAnthropic } from "@langchain/anthropic";
+import { tool } from "@langchain/core/tools";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { StateGraph, StateSchema, MessagesValue, END, START } from "@langchain/langgraph";
+import { z } from "zod";
+
+const search = tool(async ({ query }) => `Results for: ${query}`, {
+  name: "search",
+  description: "Search for information",
+  schema: z.object({ query: z.string() }),
+});
+
+const calculate = tool(async ({ expression }) => eval(expression).toString(), {
+  name: "calculate",
+  description: "Calculate a mathematical expression",
+  schema: z.object({ expression: z.string() }),
+});
+
+const AgentState = new StateSchema({
+  messages: MessagesValue,
+});
+
+const model = new ChatAnthropic({ model: "claude-sonnet-4-5-20250929" });
+const tools = [search, calculate];
+const modelWithTools = model.bindTools(tools);
+
+const agentNode = async (state: typeof AgentState.State) => {
+  const response = await modelWithTools.invoke(state.messages);
+  return { messages: [response] };
+};
+
+const toolNode = async (state: typeof AgentState.State) => {
+  const lastMessage = state.messages.at(-1);
+  if (!lastMessage || !AIMessage.isInstance(lastMessage)) {
+    return { messages: [] };
+  }
+
+  const toolsByName = { [search.name]: search, [calculate.name]: calculate };
+  const result = [];
+
+  for (const toolCall of lastMessage.tool_calls ?? []) {
+    const tool = toolsByName[toolCall.name];
+    const observation = await tool.invoke(toolCall);
+    result.push(observation);
+  }
+
+  return { messages: result };
+};
+
+const shouldContinue = (state: typeof AgentState.State) => {
+  const lastMessage = state.messages.at(-1);
+  if (lastMessage && AIMessage.isInstance(lastMessage) && lastMessage.tool_calls?.length) {
+    return "tools";
+  }
+  return END;
+};
+
+// Dynamic agent: model decides when to stop
+const agent = new StateGraph(AgentState)
+  .addNode("agent", agentNode)
+  .addNode("tools", toolNode)
+  .addEdge(START, "agent")
+  .addConditionalEdges("agent", shouldContinue, ["tools", END])
+  .addEdge("tools", "agent")
+  .compile();
+```
+
+### Orchestrator-Worker Pattern
+
+```typescript
+import { StateGraph, StateSchema, Send, ReducedValue, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const OrchestratorState = new StateSchema({
+  tasks: z.array(z.string()),
+  results: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
+  summary: z.string().optional(),
+});
+
+const orchestrator = (state: typeof OrchestratorState.State) => {
+  // Fan out tasks to workers
+  return state.tasks.map(task => new Send("worker", { task }));
+};
+
+const worker = async (state: { task: string }) => {
+  const result = `Completed: ${state.task}`;
+  return { results: [result] };
+};
+
+const synthesize = async (state: typeof OrchestratorState.State) => {
+  const summary = `Processed ${state.results.length} tasks`;
+  return { summary };
+};
+
+const graph = new StateGraph(OrchestratorState)
+  .addNode("worker", worker)
+  .addNode("synthesize", synthesize)
+  .addConditionalEdges(START, orchestrator, ["worker"])
+  .addEdge("worker", "synthesize")
+  .addEdge("synthesize", END)
+  .compile();
+
 const result = await graph.invoke({
-  count: 0,
-  maxIterations: 3,
-  results: [],
+  tasks: ["Task A", "Task B", "Task C"],
 });
-console.log(result.results);
-// ['Iteration 0', 'Iteration 1', 'Iteration 2']
+console.log(result.summary);  // "Processed 3 tasks"
 ```
 
-### Multi-Agent Workflow
+### Hybrid: Workflow with Agent Step
 
 ```typescript
-import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { StateGraph, StateSchema, START, END } from "@langchain/langgraph";
+import { z } from "zod";
 
-const AgentState = Annotation.Root({
-  messages: Annotation<string[]>({
-    reducer: (curr, update) => curr.concat(update),
-    default: () => [],
-  }),
-  currentAgent: Annotation<string>(),
-  taskComplete: Annotation<boolean>({ default: () => false }),
+const HybridState = new StateSchema({
+  input: z.string(),
+  validated: z.boolean(),
+  agentResponse: z.string().optional(),
+  finalized: z.boolean(),
 });
 
-const researcher = (state: typeof AgentState.State) => {
-  return {
-    messages: ["Research complete"],
-    currentAgent: "writer",
-  };
+const validate = async (state: typeof HybridState.State) => {
+  return { validated: true };
 };
 
-const writer = (state: typeof AgentState.State) => {
-  return {
-    messages: ["Draft written"],
-    currentAgent: "reviewer",
-  };
+const agentProcess = async (state: typeof HybridState.State) => {
+  // Dynamic agent logic here
+  const response = `Agent processed: ${state.input}`;
+  return { agentResponse: response };
 };
 
-const reviewer = (state: typeof AgentState.State) => {
-  return {
-    messages: ["Review complete"],
-    taskComplete: true,
-  };
+const finalize = async (state: typeof HybridState.State) => {
+  return { finalized: true };
 };
 
-const routeAgent = (
-  state: typeof AgentState.State
-): "researcher" | "writer" | "reviewer" | "end" => {
-  if (state.taskComplete) {
-    return "end";
-  }
-  return state.currentAgent as "researcher" | "writer" | "reviewer";
-};
-
-// Build multi-agent workflow
-const workflow = new StateGraph(AgentState)
-  .addNode("researcher", researcher)
-  .addNode("writer", writer)
-  .addNode("reviewer", reviewer)
-  .addEdge(START, "researcher")
-  .addConditionalEdges("researcher", routeAgent, {
-    writer: "writer",
-    end: END,
-  })
-  .addConditionalEdges("writer", routeAgent, {
-    reviewer: "reviewer",
-    end: END,
-  })
-  .addConditionalEdges("reviewer", routeAgent, {
-    end: END,
-  });
-
-const graph = workflow.compile();
+// Hybrid: validate → agent → finalize
+const hybrid = new StateGraph(HybridState)
+  .addNode("validate", validate)      // Workflow
+  .addNode("agent", agentProcess)     // Agent
+  .addNode("finalize", finalize)      // Workflow
+  .addEdge(START, "validate")
+  .addEdge("validate", "agent")
+  .addEdge("agent", "finalize")
+  .addEdge("finalize", END)
+  .compile();
 ```
 
-## What You Can Do
-
-✅ **Create linear workflows** with sequential node execution  
-✅ **Build branching workflows** with conditional routing  
-✅ **Implement loops** by routing back to previous nodes  
-✅ **Execute nodes in parallel** with fan-out/fan-in patterns  
-✅ **Use async nodes** for concurrent operations  
-✅ **Combine control flow and state updates** with Command  
-✅ **Chain multiple graphs** by invoking graphs from nodes  
-
-## What You Cannot Do
-
-❌ **Modify graph after compilation**: Structure is fixed once compiled  
-❌ **Create cycles without conditions**: Must have exit condition  
-❌ **Add edges to non-existent nodes**: All nodes must be added first  
-❌ **Use node names that conflict with START/END**: These are reserved  
-❌ **Access nodes directly**: Use edges to connect nodes  
-
-## Common Gotchas
-
-### 1. **Using Strings Instead of START/END Constants**
+### Map-Reduce Example
 
 ```typescript
-import { START, END } from "@langchain/langgraph";
+import { StateGraph, StateSchema, Send, ReducedValue, START, END } from "@langchain/langgraph";
+import { z } from "zod";
 
-// ❌ Wrong - creates nodes with these names
-builder.addEdge("START", "node1");
-
-// ✅ Correct - uses special constants
-builder.addEdge(START, "node1");
-```
-
-### 2. **Forgetting to Add Nodes Before Edges**
-
-```typescript
-// ❌ Wrong order - edge to non-existent node
-builder.addEdge(START, "myNode");
-builder.addNode("myNode", myFunction);  // Too late!
-
-// ✅ Correct order
-builder.addNode("myNode", myFunction);
-builder.addEdge(START, "myNode");
-```
-
-### 3. **Conditional Routing Return Type Mismatch**
-
-```typescript
-// ❌ Returns boolean instead of string
-const badRouter = (state: typeof State.State) => {
-  return state.counter > 5;  // Returns true/false
-};
-
-// ✅ Returns string matching path map
-const goodRouter = (state: typeof State.State) => {
-  if (state.counter > 5) {
-    return "pathA";
-  }
-  return "pathB";
-};
-```
-
-### 4. **Infinite Loops Without Exit**
-
-```typescript
-// ❌ No exit condition - infinite loop!
-const alwaysContinue = (state: typeof State.State) => "process";
-
-builder.addConditionalEdges("process", alwaysContinue, {
-  process: "process",
+const MapReduceState = new StateSchema({
+  documents: z.array(z.string()),
+  summaries: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
+  finalSummary: z.string().optional(),
 });
 
-// ✅ Has exit condition
-const conditionalContinue = (state: typeof State.State) => {
-  if (state.counter >= 10) {
-    return "end";
-  }
+const mapDocuments = (state: typeof MapReduceState.State) => {
+  return state.documents.map(doc => new Send("summarize", { doc }));
+};
+
+const summarize = async (state: { doc: string }) => {
+  const summary = `Summary of: ${state.doc.slice(0, 50)}...`;
+  return { summaries: [summary] };
+};
+
+const reduce = async (state: typeof MapReduceState.State) => {
+  const finalSummary = state.summaries.join(" | ");
+  return { finalSummary };
+};
+
+const graph = new StateGraph(MapReduceState)
+  .addNode("summarize", summarize)
+  .addNode("reduce", reduce)
+  .addConditionalEdges(START, mapDocuments, ["summarize"])
+  .addEdge("summarize", "reduce")
+  .addEdge("reduce", END)
+  .compile();
+
+const result = await graph.invoke({
+  documents: ["Doc 1 content...", "Doc 2 content...", "Doc 3 content..."],
+});
+```
+
+### Parallel Knowledge Base Router
+
+```typescript
+import { StateGraph, StateSchema, Send, ReducedValue, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const RouterState = new StateSchema({
+  query: z.string(),
+  sources: z.array(z.string()),
+  results: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
+  final: z.string().optional(),
+});
+
+const classify = async (state: typeof RouterState.State) => {
+  const query = state.query.toLowerCase();
+  const sources: string[] = [];
+
+  if (query.includes("code")) sources.push("github");
+  if (query.includes("doc")) sources.push("notion");
+  if (query.includes("message")) sources.push("slack");
+
+  return { sources };
+};
+
+const routeToSources = (state: typeof RouterState.State) => {
+  return state.sources.map(source => new Send(source, { query: state.query }));
+};
+
+const queryGithub = async (state: { query: string }) => {
+  return { results: [`GitHub: ${state.query}`] };
+};
+
+const queryNotion = async (state: { query: string }) => {
+  return { results: [`Notion: ${state.query}`] };
+};
+
+const querySlack = async (state: { query: string }) => {
+  return { results: [`Slack: ${state.query}`] };
+};
+
+const synthesize = async (state: typeof RouterState.State) => {
+  return { final: state.results.join(" + ") };
+};
+
+const graph = new StateGraph(RouterState)
+  .addNode("classify", classify)
+  .addNode("github", queryGithub)
+  .addNode("notion", queryNotion)
+  .addNode("slack", querySlack)
+  .addNode("synthesize", synthesize)
+  .addEdge(START, "classify")
+  .addConditionalEdges("classify", routeToSources, ["github", "notion", "slack"])
+  .addEdge("github", "synthesize")
+  .addEdge("notion", "synthesize")
+  .addEdge("slack", "synthesize")
+  .addEdge("synthesize", END)
+  .compile();
+```
+
+## Boundaries
+
+### What You CAN Configure
+
+✅ Choose workflow vs agent pattern
+✅ Mix deterministic and agentic steps
+✅ Use Send API for parallel execution
+✅ Define custom orchestrator logic
+✅ Control worker node behavior
+✅ Aggregate results with reducers
+
+### What You CANNOT Configure
+
+❌ Change Send API message-passing model
+❌ Bypass worker state isolation
+❌ Modify parallel execution mechanism
+❌ Override reducer behavior at runtime
+
+## Gotchas
+
+### 1. Send Requires Worker State Isolation
+
+```typescript
+// ❌ WRONG - Workers share state, causing conflicts
+const State = new StateSchema({
+  sharedCounter: z.number(),  // All workers modify same counter!
+});
+
+// ✅ CORRECT - Each worker gets isolated input
+const worker = async (state: { task: string }) => {
+  // state is isolated to this worker
+  return { results: [process(state.task)] };
+};
+```
+
+### 2. Send Needs Accumulator Reducer
+
+```typescript
+// ❌ WRONG - Last worker overwrites all others
+const State = new StateSchema({
+  results: z.array(z.string()),  // No reducer!
+});
+
+// ✅ CORRECT - Use ReducedValue
+import { ReducedValue } from "@langchain/langgraph";
+
+const State = new StateSchema({
+  results: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
+});
+```
+
+### 3. Workflows Can Become Too Rigid
+
+```typescript
+// ❌ ANTI-PATTERN - Overly rigid workflow
+.addEdge("validate", "process")  // Always proceeds, no error handling
+
+// ✅ BETTER - Add conditional logic
+const routeAfterValidate = (state) => {
+  if (!state.validated) return "errorHandler";
   return "process";
 };
 
-builder.addConditionalEdges("process", conditionalContinue, {
-  process: "process",
-  end: END,
-});
+.addConditionalEdges("validate", routeAfterValidate, ["process", "errorHandler"]);
 ```
 
-### 5. **Not Compiling Before Use**
+### 4. Always Await Async Nodes
 
 ```typescript
-const builder = new StateGraph(State);
-// ... add nodes and edges ...
+// ❌ WRONG - Forgetting await
+const result = graph.invoke({ data: "test" });
+console.log(result.output);  // undefined!
 
-// ❌ Can't invoke builder
-// const result = await builder.invoke({ input: "data" });
-
-// ✅ Must compile first
-const graph = builder.compile();
-const result = await graph.invoke({ input: "data" });
+// ✅ CORRECT
+const result = await graph.invoke({ data: "test" });
+console.log(result.output);  // Works!
 ```
 
-## Related Documentation
+## Links
 
-- [LangGraph Overview](/langgraph-overview/) - Core concepts and fundamentals
-- [LangGraph State Management](/langgraph-state-management/) - State schemas and reducers
-- [LangGraph Graph API](/langgraph-graph-api/) - Compilation and execution
-- [Official Docs - Graph API](https://js.langchain.com/docs/langgraph/concepts/graph_api)
-- [Official Docs - Conditional Edges](https://js.langchain.com/docs/langgraph/how-tos/branching)
+- [Workflows and Agents (JavaScript)](https://docs.langchain.com/oss/javascript/langgraph/workflows-agents)
+- [Send API Guide](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api#map-reduce-and-the-send-api)
+- [Map-Reduce Example](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api#map-reduce-and-the-send-api)

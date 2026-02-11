@@ -1,464 +1,282 @@
 ---
 name: langgraph-persistence
-description: Implementing persistence in LangGraph with checkpointers (MemorySaver, SqliteSaver, PostgresSaver), managing threads, resuming from checkpoints, and using memory stores
+description: Implementing persistence and checkpointing in LangGraph: saving state, resuming execution, thread IDs, and checkpointer libraries
 language: js
 ---
 
 # langgraph-persistence (JavaScript/TypeScript)
 
-# LangGraph Persistence
+---
+name: langgraph-persistence
+description: Implementing persistence and checkpointing - saving state, resuming execution, thread IDs, and checkpointer libraries
+---
 
 ## Overview
 
-LangGraph provides built-in persistence through checkpointers, which save graph state at every super-step. This enables powerful capabilities like conversation memory, human-in-the-loop workflows, time travel, and fault tolerance.
+LangGraph's persistence layer enables durable execution by checkpointing graph state at every super-step. This unlocks human-in-the-loop, memory, time travel, and fault-tolerance capabilities.
 
-## Checkpointers
+**Key Components:**
+- **Checkpointer**: Saves/loads graph state
+- **Thread ID**: Identifier for checkpoint sequences
+- **Checkpoints**: Snapshots of state at each step
 
-Checkpointers save state to persistent storage. When you compile a graph with a checkpointer, state is automatically saved to a **thread** after each step.
+## Decision Table: Checkpointer Selection
 
-### Available Checkpointers
+| Checkpointer | Use Case | Persistence | Production Ready |
+|--------------|----------|-------------|------------------|
+| `MemorySaver` | Testing, development | In-memory only | ❌ No |
+| `SqliteSaver` | Local development | SQLite file | ⚠️ Single-user |
+| `PostgresSaver` | Production | PostgreSQL | ✅ Yes |
 
-| Checkpointer | Use Case | Installation |
-|--------------|----------|--------------|
-| `MemorySaver` | Development, testing | Built-in |
-| `SqliteSaver` | Local workflows, prototyping | `npm install @langchain/langgraph-checkpoint-sqlite` |
-| `PostgresSaver` | Production deployments | `npm install @langchain/langgraph-checkpoint-postgres` |
-| `MongoDBSaver` | MongoDB production | `npm install @langchain/langgraph-checkpoint-mongodb` |
-| `RedisSaver` | Redis production | `npm install @langchain/langgraph-checkpoint-redis` |
+## Code Examples
 
-### MemorySaver (In-Memory Checkpointer)
+### Basic Persistence with MemorySaver
 
 ```typescript
-import { MemorySaver } from "@langchain/langgraph";
-import { StateGraph, MessagesAnnotation } from "@langchain/langgraph";
+import { MemorySaver, StateGraph, StateSchema, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const State = new StateSchema({
+  messages: z.array(z.string()),
+});
+
+const addMessage = async (state: typeof State.State) => {
+  return { messages: [...state.messages, "Bot response"] };
+};
 
 // Create checkpointer
 const checkpointer = new MemorySaver();
 
-// Build and compile graph with checkpointer
-const builder = new StateGraph(MessagesAnnotation);
-// ... add nodes and edges ...
-const graph = builder.compile({ checkpointer });
+// Compile with checkpointer
+const graph = new StateGraph(State)
+  .addNode("respond", addMessage)
+  .addEdge(START, "respond")
+  .addEdge("respond", END)
+  .compile({ checkpointer });  // Enable persistence
 
-// Invoke with thread_id to persist state
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Hello" }] },
-  { configurable: { thread_id: "thread-1" } }
-);
+// First invocation with thread_id
+const config = { configurable: { thread_id: "conversation-1" } };
+const result1 = await graph.invoke({ messages: ["Hello"] }, config);
+console.log(result1.messages.length);  // 2
+
+// Second invocation - state persisted
+const result2 = await graph.invoke({ messages: ["How are you?"] }, config);
+console.log(result2.messages.length);  // 4 (previous + new)
 ```
 
-**Use cases**: Testing, development, short-lived sessions
-
-### SqliteSaver (SQLite Checkpointer)
+### SQLite Persistence
 
 ```typescript
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 
-// Create SQLite checkpointer (file-based)
-const checkpointer = await SqliteSaver.fromConnString("checkpoints.db");
+// Create SQLite checkpointer
+const checkpointer = SqliteSaver.fromConnString("checkpoints.db");
 
-// Or in-memory SQLite
-// const checkpointer = await SqliteSaver.fromConnString(":memory:");
+const graph = new StateGraph(State)
+  .addNode("process", processNode)
+  .addEdge(START, "process")
+  .addEdge("process", END)
+  .compile({ checkpointer });
 
-const graph = builder.compile({ checkpointer });
-
-// Use same as MemorySaver
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Hello" }] },
-  { configurable: { thread_id: "user-123" } }
-);
+// Use with thread_id
+const config = { configurable: { thread_id: "user-123" } };
+const result = await graph.invoke({ data: "test" }, config);
 ```
 
-**Use cases**: Local development, small-scale production, persistent storage
-
-### PostgresSaver (PostgreSQL Checkpointer)
+### PostgreSQL Persistence
 
 ```typescript
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
-// Create PostgreSQL checkpointer
+// Create Postgres checkpointer
 const checkpointer = await PostgresSaver.fromConnString(
-  "postgresql://user:password@localhost:5432/dbname"
+  "postgresql://user:pass@localhost/db"
 );
 
-const graph = builder.compile({ checkpointer });
+const graph = new StateGraph(State)
+  .addNode("process", processNode)
+  .addEdge(START, "process")
+  .addEdge("process", END)
+  .compile({ checkpointer });
+
+const config = { configurable: { thread_id: "thread-1" } };
+const result = await graph.invoke({ data: "test" }, config);
 ```
 
-**Use cases**: Production deployments, distributed systems, high concurrency
-
-## Thread Management
-
-Threads organize conversations and execution history. Each thread has a unique ID and maintains its own state history.
-
-### Creating and Using Threads
-
-```typescript
-import { MemorySaver } from "@langchain/langgraph";
-
-const checkpointer = new MemorySaver();
-const graph = builder.compile({ checkpointer });
-
-// Thread 1: First conversation
-const result1 = await graph.invoke(
-  { messages: [{ role: "user", content: "My name is Alice" }] },
-  { configurable: { thread_id: "conversation-1" } }
-);
-
-// Continue thread 1
-const result2 = await graph.invoke(
-  { messages: [{ role: "user", content: "What's my name?" }] },
-  { configurable: { thread_id: "conversation-1" } }
-);
-// AI remembers: "Your name is Alice"
-
-// Thread 2: Separate conversation
-const result3 = await graph.invoke(
-  { messages: [{ role: "user", content: "What's my name?" }] },
-  { configurable: { thread_id: "conversation-2" } }
-);
-// AI doesn't know - different thread
-```
-
-### Getting Thread State
-
-```typescript
-// Get current state of a thread
-const state = await graph.getState({ configurable: { thread_id: "thread-1" } });
-console.log(state.values);  // Current state
-console.log(state.next);    // Next nodes to execute
-
-// Get state history
-const history = await graph.getStateHistory({
-  configurable: { thread_id: "thread-1" }
-});
-
-for await (const state of history) {
-  console.log(`Checkpoint: ${state.config.configurable.checkpoint_id}`);
-  console.log(`State:`, state.values);
-}
-```
-
-## Resuming from Checkpoints
-
-You can resume execution from any checkpoint in a thread's history.
-
-### Resume from Latest Checkpoint
-
-```typescript
-// Continue from where we left off
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Continue our chat" }] },
-  { configurable: { thread_id: "thread-1" } }
-);
-```
-
-### Resume from Specific Checkpoint
-
-```typescript
-// Get checkpoint ID from history
-const history = [];
-for await (const state of graph.getStateHistory({
-  configurable: { thread_id: "thread-1" }
-})) {
-  history.push(state);
-}
-
-const checkpointId = history[2].config.configurable.checkpoint_id;
-
-// Resume from that checkpoint
-const result = await graph.invoke(
-  null,  // No new input - replay from checkpoint
-  {
-    configurable: {
-      thread_id: "thread-1",
-      checkpoint_id: checkpointId,
-    },
-  }
-);
-```
-
-### Updating State Before Resuming
+### Retrieving State
 
 ```typescript
 // Get current state
-const state = await graph.getState({ configurable: { thread_id: "thread-1" } });
+const config = { configurable: { thread_id: "conversation-1" } };
+const currentState = await graph.getState(config);
+console.log(currentState.values);  // Current state
+console.log(currentState.next);    // Next nodes to execute
 
-// Update state
-await graph.updateState(
-  { configurable: { thread_id: "thread-1" } },
-  { messages: [{ role: "user", content: "Modified message" }] }
-);
-
-// Resume with updated state
-const result = await graph.invoke(
-  null,
-  { configurable: { thread_id: "thread-1" } }
-);
-```
-
-## Memory Stores
-
-Memory stores enable sharing data **across threads**, unlike checkpointers which are thread-scoped.
-
-### InMemoryStore
-
-```typescript
-import { InMemoryStore, MemorySaver } from "@langchain/langgraph";
-
-// Create store and checkpointer
-const store = new InMemoryStore();
-const checkpointer = new MemorySaver();
-
-// Compile with both
-const graph = builder.compile({ checkpointer, store });
-```
-
-### Using Store in Nodes
-
-```typescript
-import { RunnableConfig } from "@langchain/core/runnables";
-import type { BaseStore } from "@langchain/langgraph";
-
-const nodeWithStore = async (
-  state: typeof MessagesAnnotation.State,
-  config: RunnableConfig,
-  store: BaseStore
-) => {
-  // Get user_id from config
-  const userId = config.configurable?.user_id;
-  const namespace = [userId, "preferences"];
-  
-  // Get user preferences (across all threads)
-  const prefs = await store.get(namespace, "settings");
-  
-  // Update preferences
-  await store.put(namespace, "settings", {
-    theme: "dark",
-    language: "en",
-  });
-  
-  return {
-    messages: [{ role: "assistant", content: `Loaded preferences: ${JSON.stringify(prefs)}` }],
-  };
-};
-```
-
-### Store Operations
-
-```typescript
-import type { BaseStore } from "@langchain/langgraph";
-
-async function manageMemories(store: BaseStore, userId: string) {
-  const namespace = [userId, "memories"];
-  
-  // Put: Save a memory
-  await store.put(namespace, "mem-1", { content: "User likes TypeScript" });
-  
-  // Get: Retrieve a memory
-  const memory = await store.get(namespace, "mem-1");
-  
-  // Search: Find memories
-  const results = await store.search(namespace, { query: "TypeScript" });
-  
-  // List: Get all memories
-  const allMemories = await store.list(namespace);
-  
-  // Delete: Remove a memory
-  await store.delete(namespace, "mem-1");
+// Get state history
+const history = await graph.getStateHistory(config);
+for await (const state of history) {
+  console.log("Step:", state.values);
 }
 ```
 
-## Complete Examples
-
-### Chat with Memory
+### Resuming from Checkpoint
 
 ```typescript
-import { MemorySaver, StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
+import { MemorySaver, StateGraph, START, END } from "@langchain/langgraph";
 
 const checkpointer = new MemorySaver();
 
-const chatbot = async (state: typeof MessagesAnnotation.State) => {
-  // Your chatbot logic
-  return { messages: [{ role: "assistant", content: "Response" }] };
-};
+const step1 = async (state) => ({ data: "step1" });
+const step2 = async (state) => ({ data: state.data + "_step2" });
 
-const builder = new StateGraph(MessagesAnnotation)
-  .addNode("chatbot", chatbot)
-  .addEdge(START, "chatbot")
-  .addEdge("chatbot", END);
+const graph = new StateGraph(State)
+  .addNode("step1", step1)
+  .addNode("step2", step2)
+  .addEdge(START, "step1")
+  .addEdge("step1", "step2")
+  .addEdge("step2", END)
+  .compile({
+    checkpointer,
+    interruptBefore: ["step2"],  // Pause before step2
+  });
 
-const graph = builder.compile({ checkpointer });
+const config = { configurable: { thread_id: "1" } };
 
-// Multi-turn conversation
-const config = { configurable: { thread_id: "user-123" } };
+// Run until breakpoint
+await graph.invoke({ data: "start" }, config);
 
-await graph.invoke(
-  { messages: [{ role: "user", content: "Hi" }] },
-  config
-);
-await graph.invoke(
-  { messages: [{ role: "user", content: "Remember me?" }] },
-  config
-);
+// Resume execution
+await graph.invoke(null, config);  // null continues from checkpoint
 ```
 
-### User Preferences Across Threads
+### Update State
 
 ```typescript
-import { InMemoryStore, MemorySaver, StateGraph, MessagesAnnotation } from "@langchain/langgraph";
-import type { BaseStore } from "@langchain/langgraph";
-import { RunnableConfig } from "@langchain/core/runnables";
+// Modify state before resuming
+const config = { configurable: { thread_id: "1" } };
 
-const store = new InMemoryStore();
+// Update state
+await graph.updateState(config, { data: "manually_updated" });
+
+// Resume with updated state
+await graph.invoke(null, config);
+```
+
+### Thread Management
+
+```typescript
+// Different threads maintain separate state
+const thread1Config = { configurable: { thread_id: "user-alice" } };
+const thread2Config = { configurable: { thread_id: "user-bob" } };
+
+// Alice's conversation
+await graph.invoke({ messages: ["Hi from Alice"] }, thread1Config);
+
+// Bob's conversation (separate state)
+await graph.invoke({ messages: ["Hi from Bob"] }, thread2Config);
+
+// Alice's state is isolated from Bob's
+```
+
+### Checkpointer in Subgraphs
+
+```typescript
+import { MemorySaver, StateGraph, START } from "@langchain/langgraph";
+
+// Only parent graph needs checkpointer
+const subgraphNode = async (state) => ({ data: "subgraph" });
+
+const subgraph = new StateGraph(State)
+  .addNode("process", subgraphNode)
+  .addEdge(START, "process")
+  .compile();  // No checkpointer needed
+
+// Parent graph with checkpointer
 const checkpointer = new MemorySaver();
 
-const loadPreferences = async (
-  state: typeof MessagesAnnotation.State,
-  config: RunnableConfig,
-  store: BaseStore
-) => {
-  const userId = config.configurable?.user_id;
-  const namespace = [userId, "prefs"];
-  
-  const prefs = await store.get(namespace, "settings") || {};
-  return {
-    messages: [{
-      role: "system",
-      content: `Theme: ${prefs.theme || "default"}`,
-    }],
-  };
-};
-
-const savePreferences = async (
-  state: typeof MessagesAnnotation.State,
-  config: RunnableConfig,
-  store: BaseStore
-) => {
-  const userId = config.configurable?.user_id;
-  const namespace = [userId, "prefs"];
-  
-  // Extract preference from user message
-  await store.put(namespace, "settings", { theme: "dark" });
-  return {};
-};
-
-const builder = new StateGraph(MessagesAnnotation)
-  .addNode("load", loadPreferences)
-  .addNode("save", savePreferences);
-  // ... add edges ...
-
-const graph = builder.compile({ checkpointer, store });
-
-// Use across different threads
-const config1 = { configurable: { thread_id: "t1", user_id: "user-1" } };
-const config2 = { configurable: { thread_id: "t2", user_id: "user-1" } };
-
-await graph.invoke(
-  { messages: [{ role: "user", content: "Set theme to dark" }] },
-  config1
-);
-await graph.invoke(
-  { messages: [{ role: "user", content: "What's my theme?" }] },
-  config2
-);
-// Both threads access same user preferences
+const parent = new StateGraph(State)
+  .addNode("subgraph", subgraph)
+  .addEdge(START, "subgraph")
+  .compile({ checkpointer });  // Propagates to subgraph
 ```
 
-## Decision Table: Which Checkpointer?
+## Boundaries
 
-| Scenario | Recommended Checkpointer |
-|----------|------------------------|
-| Unit testing | `MemorySaver` |
-| Development/debugging | `MemorySaver` or `SqliteSaver` |
-| Local production (single instance) | `SqliteSaver` |
-| Production (multiple instances) | `PostgresSaver` |
-| MongoDB deployment | `MongoDBSaver` |
-| Redis deployment | `RedisSaver` |
-| No persistence needed | Don't use checkpointer |
+### What You CAN Configure
 
-## What You Can Do
+✅ Choose checkpointer implementation
+✅ Specify thread IDs
+✅ Retrieve state at any checkpoint
+✅ Update state between invocations
+✅ Set breakpoints for pausing
+✅ Access state history
+✅ Resume from any checkpoint
 
-✅ **Save state automatically** with checkpointers  
-✅ **Resume conversations** using thread IDs  
-✅ **Access conversation history** with getStateHistory  
-✅ **Update state** before resuming execution  
-✅ **Share data across threads** with memory stores  
-✅ **Query memories** with semantic search  
-✅ **Support multiple users** with namespaced stores  
-✅ **Persist to SQLite, PostgreSQL, MongoDB, or Redis** for production  
+### What You CANNOT Configure
 
-## What You Cannot Do
+❌ Checkpoint format/schema (internal)
+❌ Checkpoint timing (every super-step)
+❌ Thread ID structure (arbitrary strings only)
 
-❌ **Share checkpointer state across graphs**: Each graph is isolated  
-❌ **Access checkpoints without thread_id**: Thread ID is required  
-❌ **Modify checkpoint history**: Checkpoints are immutable  
-❌ **Use checkpointers without compiling**: Must compile with checkpointer  
-❌ **Mix different checkpointers**: One checkpointer per graph  
+## Gotchas
 
-## Common Gotchas
-
-### 1. **Forgetting thread_id**
+### 1. Thread ID Required for Persistence
 
 ```typescript
-// ❌ No thread_id - state not persisted
-const result = await graph.invoke({ messages: [{ role: "user", content: "Hello" }] });
+// ❌ WRONG - No thread_id, state not saved
+await graph.invoke({ data: "test" });  // Lost after execution!
 
-// ✅ With thread_id - state persisted
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Hello" }] },
-  { configurable: { thread_id: "thread-1" } }
-);
+// ✅ CORRECT - Always provide thread_id
+const config = { configurable: { thread_id: "session-1" } };
+await graph.invoke({ data: "test" }, config);
 ```
 
-### 2. **Not Installing Checkpointer Package**
+### 2. MemorySaver Not for Production
 
 ```typescript
-// ❌ Will fail if package not installed
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+// ❌ WRONG - Data lost on restart
+const checkpointer = new MemorySaver();  // In-memory only!
 
-// ✅ Install first
-// npm install @langchain/langgraph-checkpoint-sqlite
+// ✅ CORRECT - Use persistent storage
+import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
+const checkpointer = await PostgresSaver.fromConnString("postgresql://...");
 ```
 
-### 3. **Using Same thread_id for Different Users**
+### 3. Resuming Requires null Input
 
 ```typescript
-// ❌ Users share same thread - privacy issue!
-const user1 = await graph.invoke(msg1, { configurable: { thread_id: "shared" } });
-const user2 = await graph.invoke(msg2, { configurable: { thread_id: "shared" } });
+// ❌ WRONG - Providing input restarts
+await graph.invoke({ new: "data" }, config);  // Restarts from beginning
 
-// ✅ Unique thread per user
-const user1 = await graph.invoke(msg1, { configurable: { thread_id: `user-${user1Id}` } });
-const user2 = await graph.invoke(msg2, { configurable: { thread_id: `user-${user2Id}` } });
+// ✅ CORRECT - Use null to resume
+await graph.invoke(null, config);  // Resumes from checkpoint
 ```
 
-### 4. **Compiling Without Checkpointer**
+### 4. Always Await Async Operations
 
 ```typescript
-// ❌ No checkpointer - state not saved
+// ❌ WRONG - Forgetting await
+const result = graph.invoke({ data: "test" }, config);
+console.log(result.values);  // undefined!
+
+// ✅ CORRECT
+const result = await graph.invoke({ data: "test" }, config);
+console.log(result.values);  // Works!
+```
+
+### 5. Checkpointer Must Be Passed to Compile
+
+```typescript
+// ❌ WRONG - Checkpointer after compile
 const graph = builder.compile();
+graph.checkpointer = checkpointer;  // Too late!
 
-// ✅ With checkpointer
-const checkpointer = new MemorySaver();
+// ✅ CORRECT - Pass during compile
 const graph = builder.compile({ checkpointer });
 ```
 
-### 5. **Not Awaiting Async Checkpointers**
+## Links
 
-```typescript
-// ❌ Forgot await - checkpointer not initialized
-const checkpointer = SqliteSaver.fromConnString("db.sqlite");
-const graph = builder.compile({ checkpointer });  // Error!
-
-// ✅ Await initialization
-const checkpointer = await SqliteSaver.fromConnString("db.sqlite");
-const graph = builder.compile({ checkpointer });
-```
-
-## Related Documentation
-
-- [LangGraph Overview](/langgraph-overview/) - Core concepts
-- [LangGraph Graph API](/langgraph-graph-api/) - Compilation and execution
-- [LangGraph Time Travel](/langgraph-time-travel/) - Using checkpoints for debugging
-- [Official Docs - Persistence](https://js.langchain.com/docs/langgraph/concepts/persistence)
-- [Official Docs - Memory](https://js.langchain.com/docs/langgraph/concepts/memory)
+- [Persistence Guide](https://docs.langchain.com/oss/javascript/langgraph/persistence)
+- [Checkpointer Libraries](https://docs.langchain.com/oss/javascript/langgraph/persistence#checkpointer-libraries)
+- [Thread Management](https://docs.langchain.com/oss/javascript/langgraph/persistence#threads)

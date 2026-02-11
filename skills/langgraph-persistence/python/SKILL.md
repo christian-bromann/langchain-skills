@@ -1,437 +1,310 @@
 ---
 name: langgraph-persistence
-description: Implementing persistence in LangGraph with checkpointers (MemorySaver, SqliteSaver, PostgresSaver), managing threads, resuming from checkpoints, and using memory stores
+description: Implementing persistence and checkpointing in LangGraph: saving state, resuming execution, thread IDs, and checkpointer libraries
 language: python
 ---
 
 # langgraph-persistence (Python)
 
-# LangGraph Persistence
+---
+name: langgraph-persistence
+description: Implementing persistence and checkpointing - saving state, resuming execution, thread IDs, and checkpointer libraries
+---
 
 ## Overview
 
-LangGraph provides built-in persistence through checkpointers, which save graph state at every super-step. This enables powerful capabilities like conversation memory, human-in-the-loop workflows, time travel, and fault tolerance.
+LangGraph's persistence layer enables durable execution by checkpointing graph state at every super-step. This unlocks human-in-the-loop, memory, time travel, and fault-tolerance capabilities.
 
-## Checkpointers
+**Key Components:**
+- **Checkpointer**: Saves/loads graph state
+- **Thread ID**: Identifier for checkpoint sequences
+- **Checkpoints**: Snapshots of state at each step
 
-Checkpointers save state to persistent storage. When you compile a graph with a checkpointer, state is automatically saved to a **thread** after each step.
+## Decision Table: Checkpointer Selection
 
-### Available Checkpointers
+| Checkpointer | Use Case | Persistence | Production Ready |
+|--------------|----------|-------------|------------------|
+| `InMemorySaver` | Testing, development | In-memory only | ❌ No |
+| `SqliteSaver` | Local development | SQLite file | ⚠️ Single-user |
+| `PostgresSaver` | Production | PostgreSQL | ✅ Yes |
+| `AsyncPostgresSaver` | Async production | PostgreSQL | ✅ Yes |
 
-| Checkpointer | Use Case | Installation |
-|--------------|----------|--------------|
-| `MemorySaver` (or `InMemorySaver`) | Development, testing | Built-in |
-| `SqliteSaver` | Local workflows, prototyping | `pip install langgraph-checkpoint-sqlite` |
-| `PostgresSaver` | Production deployments | `pip install langgraph-checkpoint-postgres` |
-| `CosmosDBSaver` | Azure production | `pip install langgraph-checkpoint-cosmosdb` |
+## Code Examples
 
-### MemorySaver (In-Memory Checkpointer)
+### Basic Persistence with InMemorySaver
 
 ```python
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import StateGraph, MessagesState
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph, START, END
+from typing_extensions import TypedDict, Annotated
+import operator
+
+class State(TypedDict):
+    messages: Annotated[list, operator.add]
+
+def add_message(state: State) -> dict:
+    return {"messages": ["Bot response"]}
 
 # Create checkpointer
-checkpointer = MemorySaver()
+checkpointer = InMemorySaver()
 
-# Build and compile graph with checkpointer
-builder = StateGraph(MessagesState)
-# ... add nodes and edges ...
-graph = builder.compile(checkpointer=checkpointer)
-
-# Invoke with thread_id to persist state
-result = graph.invoke(
-    {"messages": [("user", "Hello")]},
-    config={"configurable": {"thread_id": "thread-1"}}
+# Compile with checkpointer
+graph = (
+    StateGraph(State)
+    .add_node("respond", add_message)
+    .add_edge(START, "respond")
+    .add_edge("respond", END)
+    .compile(checkpointer=checkpointer)  # Enable persistence
 )
+
+# First invocation with thread_id
+config = {"configurable": {"thread_id": "conversation-1"}}
+result1 = graph.invoke({"messages": ["Hello"]}, config)
+print(len(result1["messages"]))  # 2
+
+# Second invocation - state persisted
+result2 = graph.invoke({"messages": ["How are you?"]}, config)
+print(len(result2["messages"]))  # 4 (previous + new)
 ```
 
-**Use cases**: Testing, development, short-lived sessions
-
-### SqliteSaver (SQLite Checkpointer)
+### SQLite Persistence
 
 ```python
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-# Create SQLite checkpointer (file-based)
+# Create SQLite checkpointer
 checkpointer = SqliteSaver.from_conn_string("checkpoints.db")
 
-# Or in-memory SQLite
-# checkpointer = SqliteSaver.from_conn_string(":memory:")
-
-graph = builder.compile(checkpointer=checkpointer)
-
-# Use same as MemorySaver
-result = graph.invoke(
-    {"messages": [("user", "Hello")]},
-    config={"configurable": {"thread_id": "user-123"}}
+graph = (
+    StateGraph(State)
+    .add_node("process", process_node)
+    .add_edge(START, "process")
+    .add_edge("process", END)
+    .compile(checkpointer=checkpointer)
 )
+
+# Use with thread_id
+config = {"configurable": {"thread_id": "user-123"}}
+result = graph.invoke({"data": "test"}, config)
 ```
 
-**Use cases**: Local development, small-scale production, persistent storage
-
-### PostgresSaver (PostgreSQL Checkpointer)
+### Async PostgreSQL Persistence
 
 ```python
-from langgraph.checkpoint.postgres import PostgresSaver
-
-# Create PostgreSQL checkpointer
-checkpointer = PostgresSaver.from_conn_string(
-    "postgresql://user:password@localhost:5432/dbname"
-)
-
-# Async version
 from langgraph.checkpoint.postgres import AsyncPostgresSaver
 
-async_checkpointer = AsyncPostgresSaver.from_conn_string(
-    "postgresql://user:password@localhost:5432/dbname"
-)
-
-graph = builder.compile(checkpointer=checkpointer)
+async def main():
+    # Create async Postgres checkpointer
+    async with AsyncPostgresSaver.from_conn_string(
+        "postgresql://user:pass@localhost/db"
+    ) as checkpointer:
+        graph = (
+            StateGraph(State)
+            .add_node("process", process_node)
+            .add_edge(START, "process")
+            .add_edge("process", END)
+            .compile(checkpointer=checkpointer)
+        )
+        
+        config = {"configurable": {"thread_id": "thread-1"}}
+        result = await graph.ainvoke({"data": "test"}, config)
 ```
 
-**Use cases**: Production deployments, distributed systems, high concurrency
-
-## Thread Management
-
-Threads organize conversations and execution history. Each thread has a unique ID and maintains its own state history.
-
-### Creating and Using Threads
-
-```python
-from langgraph.checkpoint.memory import MemorySaver
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Thread 1: First conversation
-result1 = graph.invoke(
-    {"messages": [("user", "My name is Alice")]},
-    config={"configurable": {"thread_id": "conversation-1"}}
-)
-
-# Continue thread 1
-result2 = graph.invoke(
-    {"messages": [("user", "What's my name?")]},
-    config={"configurable": {"thread_id": "conversation-1"}}
-)
-# AI remembers: "Your name is Alice"
-
-# Thread 2: Separate conversation
-result3 = graph.invoke(
-    {"messages": [("user", "What's my name?")]},
-    config={"configurable": {"thread_id": "conversation-2"}}
-)
-# AI doesn't know - different thread
-```
-
-### Listing Thread States
-
-```python
-# Get current state of a thread
-state = graph.get_state(config={"configurable": {"thread_id": "thread-1"}})
-print(state.values)  # Current state
-print(state.next)    # Next nodes to execute
-
-# Get state history
-history = graph.get_state_history(
-    config={"configurable": {"thread_id": "thread-1"}}
-)
-
-for state in history:
-    print(f"Checkpoint: {state.config['configurable']['checkpoint_id']}")
-    print(f"State: {state.values}")
-```
-
-## Resuming from Checkpoints
-
-You can resume execution from any checkpoint in a thread's history.
-
-### Resume from Latest Checkpoint
-
-```python
-# Continue from where we left off
-result = graph.invoke(
-    {"messages": [("user", "Continue our chat")]},
-    config={"configurable": {"thread_id": "thread-1"}}
-)
-```
-
-### Resume from Specific Checkpoint
-
-```python
-# Get checkpoint ID from history
-history = list(graph.get_state_history(
-    config={"configurable": {"thread_id": "thread-1"}}
-))
-checkpoint_id = history[2].config["configurable"]["checkpoint_id"]
-
-# Resume from that checkpoint
-result = graph.invoke(
-    None,  # No new input - replay from checkpoint
-    config={
-        "configurable": {
-            "thread_id": "thread-1",
-            "checkpoint_id": checkpoint_id
-        }
-    }
-)
-```
-
-### Updating State Before Resuming
+### Retrieving State
 
 ```python
 # Get current state
-state = graph.get_state(config={"configurable": {"thread_id": "thread-1"}})
+config = {"configurable": {"thread_id": "conversation-1"}}
+current_state = graph.get_state(config)
+print(current_state.values)  # Current state
+print(current_state.next)    # Next nodes to execute
+
+# Get state history
+for state in graph.get_state_history(config):
+    print(f"Step: {state.values}")
+```
+
+### Resuming from Checkpoint
+
+```python
+from langgraph.checkpoint.memory import InMemorySaver
+
+checkpointer = InMemorySaver()
+
+def step1(state): 
+    return {"data": "step1"}
+
+def step2(state):
+    return {"data": state["data"] + "_step2"}
+
+graph = (
+    StateGraph(State)
+    .add_node("step1", step1)
+    .add_node("step2", step2)
+    .add_edge(START, "step1")
+    .add_edge("step1", "step2")
+    .add_edge("step2", END)
+    .compile(
+        checkpointer=checkpointer,
+        interrupt_before=["step2"]  # Pause before step2
+    )
+)
+
+config = {"configurable": {"thread_id": "1"}}
+
+# Run until breakpoint
+result = graph.invoke({"data": "start"}, config)
+
+# Resume execution
+result = graph.invoke(None, config)  # None continues from checkpoint
+```
+
+### Update State
+
+```python
+# Modify state before resuming
+config = {"configurable": {"thread_id": "1"}}
 
 # Update state
 graph.update_state(
-    config={"configurable": {"thread_id": "thread-1"}},
-    values={"messages": [("user", "Modified message")]}
+    config,
+    {"data": "manually_updated"}
 )
 
 # Resume with updated state
-result = graph.invoke(
-    None,
-    config={"configurable": {"thread_id": "thread-1"}}
+result = graph.invoke(None, config)
+```
+
+### Thread Management
+
+```python
+# Different threads maintain separate state
+thread1_config = {"configurable": {"thread_id": "user-alice"}}
+thread2_config = {"configurable": {"thread_id": "user-bob"}}
+
+# Alice's conversation
+graph.invoke({"messages": ["Hi from Alice"]}, thread1_config)
+
+# Bob's conversation (separate state)
+graph.invoke({"messages": ["Hi from Bob"]}, thread2_config)
+
+# Alice's state is isolated from Bob's
+```
+
+### Checkpointer in Subgraphs
+
+```python
+from langgraph.graph import StateGraph, START
+
+# Only parent graph needs checkpointer
+def subgraph_node(state):
+    return {"data": "subgraph"}
+
+subgraph = (
+    StateGraph(State)
+    .add_node("process", subgraph_node)
+    .add_edge(START, "process")
+    .compile()  # No checkpointer needed
+)
+
+# Parent graph with checkpointer
+checkpointer = InMemorySaver()
+
+parent = (
+    StateGraph(State)
+    .add_node("subgraph", subgraph)
+    .add_edge(START, "subgraph")
+    .compile(checkpointer=checkpointer)  # Propagates to subgraph
 )
 ```
 
-## Memory Stores
+## Boundaries
 
-Memory stores enable sharing data **across threads**, unlike checkpointers which are thread-scoped.
+### What You CAN Configure
 
-### InMemoryStore
+✅ Choose checkpointer implementation
+✅ Specify thread IDs
+✅ Retrieve state at any checkpoint
+✅ Update state between invocations
+✅ Set breakpoints for pausing
+✅ Access state history
+✅ Resume from any checkpoint
+
+### What You CANNOT Configure
+
+❌ Checkpoint format/schema (internal)
+❌ Checkpoint timing (every super-step)
+❌ Thread ID structure (arbitrary strings only)
+
+## Gotchas
+
+### 1. Thread ID Required for Persistence
 
 ```python
-from langgraph.store.memory import InMemoryStore
-from langgraph.checkpoint.memory import MemorySaver
+# ❌ WRONG - No thread_id, state not saved
+graph.invoke({"data": "test"})  # Lost after execution!
 
-# Create store and checkpointer
-store = InMemoryStore()
-checkpointer = MemorySaver()
-
-# Compile with both
-graph = builder.compile(checkpointer=checkpointer, store=store)
+# ✅ CORRECT - Always provide thread_id
+config = {"configurable": {"thread_id": "session-1"}}
+graph.invoke({"data": "test"}, config)
 ```
 
-### Using Store in Nodes
+### 2. InMemorySaver Not for Production
 
 ```python
-from langgraph.store.base import BaseStore
-from langgraph.types import RunnableConfig
+# ❌ WRONG - Data lost on restart
+checkpointer = InMemorySaver()  # In-memory only!
 
-def node_with_store(
-    state: MessagesState,
-    config: RunnableConfig,
-    *,
-    store: BaseStore
-) -> dict:
-    """Access store for cross-thread memory."""
-    # Get user_id from config
-    user_id = config["configurable"]["user_id"]
-    namespace = (user_id, "preferences")
-    
-    # Get user preferences (across all threads)
-    prefs = store.get(namespace, "settings")
-    
-    # Update preferences
-    store.put(namespace, "settings", {
-        "theme": "dark",
-        "language": "en"
-    })
-    
-    return {"messages": [("assistant", f"Loaded preferences: {prefs}")]}
+# ✅ CORRECT - Use persistent storage
+from langgraph.checkpoint.postgres import PostgresSaver
+checkpointer = PostgresSaver.from_conn_string("postgresql://...")
 ```
 
-### Store Operations
+### 3. Resuming Requires None Input
 
 ```python
-from langgraph.store.base import BaseStore
+# ❌ WRONG - Providing input restarts
+graph.invoke({"new": "data"}, config)  # Restarts from beginning
 
-def manage_memories(store: BaseStore, user_id: str):
-    namespace = (user_id, "memories")
-    
-    # Put: Save a memory
-    store.put(namespace, "mem-1", {"content": "User likes Python"})
-    
-    # Get: Retrieve a memory
-    memory = store.get(namespace, "mem-1")
-    
-    # Search: Find memories
-    results = store.search(namespace, query="Python")
-    
-    # List: Get all memories
-    all_memories = store.list(namespace)
-    
-    # Delete: Remove a memory
-    store.delete(namespace, "mem-1")
+# ✅ CORRECT - Use None to resume
+graph.invoke(None, config)  # Resumes from checkpoint
 ```
 
-## Complete Examples
-
-### Chat with Memory
+### 4. Update State Respects Reducers
 
 ```python
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import StateGraph, MessagesState, START, END
+from typing import Annotated
+import operator
 
-checkpointer = MemorySaver()
+class State(TypedDict):
+    items: Annotated[list, operator.add]
 
-def chatbot(state: MessagesState):
-    # Your chatbot logic
-    return {"messages": [("assistant", "Response")]}
+# Assume current state: {"items": ["A", "B"]}
 
-builder = StateGraph(MessagesState)
-builder.add_node("chatbot", chatbot)
-builder.add_edge(START, "chatbot")
-builder.add_edge("chatbot", END)
+# update_state passes through reducers
+graph.update_state(config, {"items": ["C"]})
+# Result: {"items": ["A", "B", "C"]}  # Appended!
 
-graph = builder.compile(checkpointer=checkpointer)
-
-# Multi-turn conversation
-config = {"configurable": {"thread_id": "user-123"}}
-
-graph.invoke({"messages": [("user", "Hi")]}, config=config)
-graph.invoke({"messages": [("user", "Remember me?")]}, config=config)
+# To overwrite, use different approach
+from langgraph.types import Overwrite
+graph.update_state(config, {"items": Overwrite(["C"])})
+# Result: {"items": ["C"]}  # Replaced
 ```
 
-### User Preferences Across Threads
+### 5. Checkpointer Must Be Passed to Compile
 
 ```python
-from langgraph.store.memory import InMemoryStore
-from langgraph.checkpoint.memory import MemorySaver
-
-store = InMemoryStore()
-checkpointer = MemorySaver()
-
-def load_preferences(state, config, *, store):
-    user_id = config["configurable"]["user_id"]
-    namespace = (user_id, "prefs")
-    
-    prefs = store.get(namespace, "settings") or {}
-    return {"messages": [("system", f"Theme: {prefs.get('theme', 'default')}")]}
-
-def save_preferences(state, config, *, store):
-    user_id = config["configurable"]["user_id"]
-    namespace = (user_id, "prefs")
-    
-    # Extract preference from user message
-    store.put(namespace, "settings", {"theme": "dark"})
-    return {}
-
-builder = StateGraph(MessagesState)
-builder.add_node("load", load_preferences)
-builder.add_node("save", save_preferences)
-# ... add edges ...
-
-graph = builder.compile(checkpointer=checkpointer, store=store)
-
-# Use across different threads
-config1 = {"configurable": {"thread_id": "t1", "user_id": "user-1"}}
-config2 = {"configurable": {"thread_id": "t2", "user_id": "user-1"}}
-
-graph.invoke({"messages": [("user", "Set theme to dark")]}, config=config1)
-graph.invoke({"messages": [("user", "What's my theme?")]}, config=config2)
-# Both threads access same user preferences
-```
-
-## Decision Table: Which Checkpointer?
-
-| Scenario | Recommended Checkpointer |
-|----------|------------------------|
-| Unit testing | `MemorySaver` |
-| Development/debugging | `MemorySaver` or `SqliteSaver` |
-| Local production (single instance) | `SqliteSaver` |
-| Production (multiple instances) | `PostgresSaver` |
-| Azure cloud deployment | `CosmosDBSaver` |
-| No persistence needed | Don't use checkpointer |
-
-## What You Can Do
-
-✅ **Save state automatically** with checkpointers  
-✅ **Resume conversations** using thread IDs  
-✅ **Access conversation history** with get_state_history  
-✅ **Update state** before resuming execution  
-✅ **Share data across threads** with memory stores  
-✅ **Query memories** with semantic search  
-✅ **Support multiple users** with namespaced stores  
-✅ **Persist to SQLite or PostgreSQL** for production  
-
-## What You Cannot Do
-
-❌ **Share checkpointer state across graphs**: Each graph is isolated  
-❌ **Access checkpoints without thread_id**: Thread ID is required  
-❌ **Modify checkpoint history**: Checkpoints are immutable  
-❌ **Use checkpointers without compiling**: Must compile with checkpointer  
-❌ **Mix different checkpointers**: One checkpointer per graph  
-
-## Common Gotchas
-
-### 1. **Forgetting thread_id**
-
-```python
-# ❌ No thread_id - state not persisted
-result = graph.invoke({"messages": [("user", "Hello")]})
-
-# ✅ With thread_id - state persisted
-result = graph.invoke(
-    {"messages": [("user", "Hello")]},
-    config={"configurable": {"thread_id": "thread-1"}}
-)
-```
-
-### 2. **Not Installing Checkpointer Package**
-
-```python
-# ❌ Will fail if package not installed
-from langgraph.checkpoint.sqlite import SqliteSaver
-
-# ✅ Install first
-# pip install langgraph-checkpoint-sqlite
-```
-
-### 3. **Using Same thread_id for Different Users**
-
-```python
-# ❌ Users share same thread - privacy issue!
-user1 = graph.invoke(msg1, config={"configurable": {"thread_id": "shared"}})
-user2 = graph.invoke(msg2, config={"configurable": {"thread_id": "shared"}})
-
-# ✅ Unique thread per user
-user1 = graph.invoke(msg1, config={"configurable": {"thread_id": f"user-{user1_id}"}})
-user2 = graph.invoke(msg2, config={"configurable": {"thread_id": f"user-{user2_id}"}})
-```
-
-### 4. **Compiling Without Checkpointer**
-
-```python
-# ❌ No checkpointer - state not saved
+# ❌ WRONG - Checkpointer after compile
 graph = builder.compile()
+graph.checkpointer = checkpointer  # Too late!
 
-# ✅ With checkpointer
-checkpointer = MemorySaver()
+# ✅ CORRECT - Pass during compile
 graph = builder.compile(checkpointer=checkpointer)
 ```
 
-### 5. **Store Parameter Annotation**
+## Links
 
-```python
-from langgraph.store.base import BaseStore
-
-# ❌ Wrong - store as regular parameter
-def bad_node(state, config, store):
-    pass
-
-# ✅ Correct - store as keyword-only with *
-def good_node(state, config, *, store: BaseStore):
-    pass
-```
-
-## Related Documentation
-
-- [LangGraph Overview](/langgraph-overview/) - Core concepts
-- [LangGraph Graph API](/langgraph-graph-api/) - Compilation and execution
-- [LangGraph Time Travel](/langgraph-time-travel/) - Using checkpoints for debugging
-- [Official Docs - Persistence](https://python.langchain.com/docs/langgraph/concepts/persistence)
-- [Official Docs - Memory](https://python.langchain.com/docs/langgraph/concepts/memory)
+- [Persistence Guide](https://docs.langchain.com/oss/python/langgraph/persistence)
+- [Checkpointer Libraries](https://docs.langchain.com/oss/python/langgraph/persistence#checkpointer-libraries)
+- [Thread Management](https://docs.langchain.com/oss/python/langgraph/persistence#threads)
+- [Time Travel](https://docs.langchain.com/langsmith/human-in-the-loop-time-travel)

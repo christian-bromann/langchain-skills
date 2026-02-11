@@ -1,392 +1,350 @@
 ---
 name: langchain-structured-output
-description: Configure structured output for LangChain agents using response formats, Zod schemas, JSON schemas, and validation for JavaScript/TypeScript.
+description: Get structured, validated output from LangChain agents and models using Zod schemas, type-safe responses, and automatic validation
 language: js
 ---
 
 # langchain-structured-output (JavaScript/TypeScript)
 
----
-name: langchain-structured-output
-description: Configure structured output for LangChain agents using response formats, Zod schemas, JSON schemas, and validation for JavaScript/TypeScript.
-language: js
----
-
-# LangChain Structured Output (JavaScript/TypeScript)
-
 ## Overview
 
-Structured output allows agents to return data in specific, predictable formats instead of free-form text. This enables reliable data extraction, validation, and downstream processing.
+Structured output transforms unstructured model responses into validated, typed data. Instead of parsing free text, you get JSON objects conforming to your schema - perfect for extracting data, building forms, or integrating with downstream systems.
 
-**Key concepts:**
-- **Response format**: Define schemas using Zod or JSON Schema
-- **Validation**: Automatic validation against the schema
-- **Tool strategy**: Use tool calling for structured output
-- **Provider strategy**: Use native structured output features
+**Key Concepts:**
+- **responseFormat**: Define expected output schema
+- **Zod Validation**: Type-safe schemas with automatic validation
+- **withStructuredOutput()**: Model method for direct structured output
+- **Tool Strategy**: Uses tool calling under the hood for models without native support
 
 ## Decision Tables
 
-### Choosing output schema format
+### When to Use Structured Output
 
-| Format | Best For | Validation | Type Safety |
-|--------|----------|-----------|-------------|
-| Zod Schema | TypeScript apps | ✅ Built-in | ✅ Excellent |
-| JSON Schema | Interoperability | ⚠️ Manual | ❌ Limited |
+| Use Case | Use Structured Output? | Why |
+|----------|----------------------|-----|
+| Extract contact info, dates, etc. | ✅ Yes | Reliabledata extraction |
+| Form filling | ✅ Yes | Validate all required fields |
+| API integration | ✅ Yes | Type-safe responses |
+| Classification tasks | ✅ Yes | Enum validation |
+| Open-ended Q&A | ❌ No | Free-form text is fine |
+| Creative writing | ❌ No | Don't constrain creativity |
 
-### Tool strategy vs provider strategy
+### Schema Options
 
-| Strategy | How It Works | Compatibility | Performance |
-|----------|-------------|---------------|-------------|
-| Tool Strategy | Uses tool calling | ✅ Most models | ⚠️ Slight overhead |
-| Provider Strategy | Native feature | ⚠️ Provider-specific | ✅ Faster |
+| Schema Type | When to Use | Example |
+|-------------|-------------|---------|
+| Zod schema | TypeScript projects (recommended) | `z.object({...})` |
+| JSON Schema | Interoperability | `{ type: "object", properties: {...} }` |
+| Union types | Multiple possible formats | `z.union([schema1, schema2])` |
 
 ## Code Examples
 
-### Basic Structured Output with Zod
+### Basic Structured Output with Agent
 
 ```typescript
 import { createAgent } from "langchain";
-import * as z from "zod";
+import { z } from "zod";
 
 const ContactInfo = z.object({
-  name: z.string().describe("Person's full name"),
-  email: z.string().email().describe("Email address"),
-  phone: z.string().describe("Phone number"),
+  name: z.string(),
+  email: z.string().email(),
+  phone: z.string(),
 });
 
 const agent = createAgent({
-  model: "gpt-4o",
+  model: "gpt-4.1",
   responseFormat: ContactInfo,
 });
 
 const result = await agent.invoke({
-  messages: [
-    {
-      role: "user",
-      content: "Extract contact: John Doe, john@example.com, (555) 123-4567",
-    },
-  ],
+  messages: [{
+    role: "user",
+    content: "Extract: John Doe, john@example.com, (555) 123-4567"
+  }],
 });
 
 console.log(result.structuredResponse);
 // { name: 'John Doe', email: 'john@example.com', phone: '(555) 123-4567' }
 ```
 
-### Nested Schema
+### Model Direct Structured Output
 
 ```typescript
-import * as z from "zod";
-
-const Address = z.object({
-  street: z.string(),
-  city: z.string(),
-  zipCode: z.string(),
-});
-
-const Person = z.object({
-  name: z.string(),
-  age: z.number().min(0).max(150),
-  address: Address,
-  hobbies: z.array(z.string()),
-});
-
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: Person,
-});
-```
-
-### Multiple Response Formats
-
-```typescript
-import { createAgent } from "langchain";
-import * as z from "zod";
-
-const Summary = z.object({
-  title: z.string(),
-  summary: z.string(),
-  keywords: z.array(z.string()),
-});
-
-const Analysis = z.object({
-  sentiment: z.enum(["positive", "negative", "neutral"]),
-  score: z.number().min(0).max(1),
-});
-
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: [Summary, Analysis], // Model can return either
-});
-```
-
-### JSON Schema (Raw)
-
-```typescript
-import { createAgent } from "langchain";
-
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "Product name" },
-      price: { type: "number", description: "Price in USD" },
-      inStock: { type: "boolean", description: "Availability" },
-    },
-    required: ["name", "price"],
-  },
-});
-```
-
-### With Tool Calling Strategy
-
-```typescript
-import { createAgent, toolStrategy } from "langchain";
-import * as z from "zod";
-
-const MovieInfo = z.object({
-  title: z.string(),
-  year: z.number(),
-  director: z.string(),
-  rating: z.number().min(0).max(10),
-});
-
-const agent = createAgent({
-  model: "gpt-4o",
-  tools: [searchTool],
-  responseFormat: toolStrategy(MovieInfo),
-});
-
-// Agent can use tools AND return structured output
-const result = await agent.invoke({
-  messages: [{ role: "user", content: "Search for Inception movie details" }],
-});
-
-console.log(result.structuredResponse);
-// { title: 'Inception', year: 2010, ... }
-```
-
-### Custom Tool Message Content
-
-```typescript
-import { createAgent, toolStrategy } from "langchain";
-import * as z from "zod";
-
-const TaskSchema = z.object({
-  task: z.string(),
-  assignee: z.string(),
-  priority: z.enum(["low", "medium", "high"]),
-});
-
-const agent = createAgent({
-  model: "gpt-4o",
-  tools: [],
-  responseFormat: toolStrategy(TaskSchema, {
-    toolMessageContent: "Action item captured and added to notes!",
-  }),
-});
-
-const result = await agent.invoke({
-  messages: [
-    {
-      role: "user",
-      content: "Sarah needs to update the timeline ASAP",
-    },
-  ],
-});
-
-// Messages include custom tool message
-console.log(result.messages);
-```
-
-### Error Handling for Validation
-
-```typescript
-import { createAgent, toolStrategy } from "langchain";
-import * as z from "zod";
-
-const StrictSchema = z.object({
-  age: z.number().min(0).max(120),
-});
-
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: toolStrategy(StrictSchema, {
-    handleError: (error) => {
-      // Custom error handling
-      return `Invalid data: ${error.message}. Please provide valid age.`;
-    },
-  }),
-});
-
-// If model provides age > 120, error handler is triggered
-```
-
-### Using with Model's withStructuredOutput
-
-```typescript
-import { initChatModel } from "langchain";
-import * as z from "zod";
-
-const model = await initChatModel("gpt-4o");
+import { ChatOpenAI } from "@langchain/openai";
+import { z } from "zod";
 
 const MovieSchema = z.object({
   title: z.string().describe("Movie title"),
   year: z.number().describe("Release year"),
-  director: z.string().describe("Director name"),
+  director: z.string(),
+  rating: z.number().min(0).max(10),
 });
 
-const modelWithStructure = model.withStructuredOutput(MovieSchema);
+const model = new ChatOpenAI({ model: "gpt-4.1" });
+const structuredModel = model.withStructuredOutput(MovieSchema);
 
-const response = await modelWithStructure.invoke(
-  "Tell me about the movie Inception"
-);
-
+const response = await structuredModel.invoke("Tell me about Inception");
 console.log(response);
-// { title: 'Inception', year: 2010, director: 'Christopher Nolan' }
+// { title: "Inception", year: 2010, director: "Christopher Nolan", rating: 8.8 }
 ```
 
-### Include Raw Message
+### Complex Nested Schema
 
 ```typescript
-import { initChatModel } from "langchain";
-import * as z from "zod";
+import { z } from "zod";
 
-const model = await initChatModel("gpt-4o");
-
-const Schema = z.object({
-  answer: z.string(),
+const AddressSchema = z.object({
+  street: z.string(),
+  city: z.string(),
+  state: z.string(),
+  zip: z.string(),
 });
 
-const modelWithStructure = model.withStructuredOutput(Schema, {
+const PersonSchema = z.object({
+  name: z.string(),
+  age: z.number().int().positive(),
+  email: z.string().email(),
+  address: AddressSchema,
+  tags: z.array(z.string()),
+});
+
+const agent = createAgent({
+  model: "gpt-4.1",
+  responseFormat: PersonSchema,
+});
+```
+
+### Enum and Literal Types
+
+```typescript
+import { z } from "zod";
+
+const ClassificationSchema = z.object({
+  category: z.enum(["urgent", "normal", "low"]),
+  sentiment: z.enum(["positive", "neutral", "negative"]),
+  confidence: z.number().min(0).max(1),
+});
+
+const agent = createAgent({
+  model: "gpt-4.1",
+  responseFormat: ClassificationSchema,
+});
+
+const result = await agent.invoke({
+  messages: [{
+    role: "user",
+    content: "Classify: This is extremely important and I'm very happy!"
+  }],
+});
+// { category: "urgent", sentiment: "positive", confidence: 0.95 }
+```
+
+### Optional Fields and Defaults
+
+```typescript
+import { z } from "zod";
+
+const EventSchema = z.object({
+  title: z.string(),
+  date: z.string(),
+  location: z.string().optional(),
+  attendees: z.array(z.string()).default([]),
+  confirmed: z.boolean().default(false),
+});
+```
+
+### Union Types (Multiple Schemas)
+
+```typescript
+import { z } from "zod";
+
+const EmailSchema = z.object({
+  type: z.literal("email"),
+  to: z.string().email(),
+  subject: z.string(),
+});
+
+const PhoneSchema = z.object({
+  type: z.literal("phone"),
+  number: z.string(),
+  message: z.string(),
+});
+
+const ContactSchema = z.union([EmailSchema, PhoneSchema]);
+
+const agent = createAgent({
+  model: "gpt-4.1",
+  responseFormat: ContactSchema,
+});
+// Model chooses which schema based on input
+```
+
+### Array Extraction
+
+```typescript
+import { z } from "zod";
+
+const TaskListSchema = z.object({
+  tasks: z.array(z.object({
+    title: z.string(),
+    priority: z.enum(["high", "medium", "low"]),
+    dueDate: z.string().optional(),
+  })),
+});
+
+const agent = createAgent({
+  model: "gpt-4.1",
+  responseFormat: TaskListSchema,
+});
+
+const result = await agent.invoke({
+  messages: [{
+    role: "user",
+    content: "Extract tasks: 1. Fix bug (high priority, due tomorrow) 2. Update docs"
+  }],
+});
+```
+
+### Include Raw AIMessage
+
+```typescript
+import { ChatOpenAI } from "@langchain/openai";
+import { z } from "zod";
+
+const schema = z.object({ name: z.string(), age: z.number() });
+
+const model = new ChatOpenAI({ model: "gpt-4.1" });
+const structuredModel = model.withStructuredOutput(schema, {
   includeRaw: true,
 });
 
-const response = await modelWithStructure.invoke("What is 2+2?");
-
+const response = await structuredModel.invoke("Person: Alice, 30 years old");
 console.log(response);
 // {
 //   raw: AIMessage { ... },
-//   parsed: { answer: '4' }
+//   parsed: { name: "Alice", age: 30 }
 // }
 ```
 
-### Optional Fields with Nullable
+### Error Handling
 
 ```typescript
-import * as z from "zod";
+import { createAgent } from "langchain";
+import { z } from "zod";
 
-// For reasoning models like o1, use nullable instead of optional
-const Schema = z.object({
-  color: z.nullable(z.string()).describe("A color mentioned"),
-  size: z.nullable(z.number()).describe("A size mentioned"),
+const StrictSchema = z.object({
+  email: z.string().email(),
+  age: z.number().int().min(0).max(120),
 });
 
-const model = await initChatModel("o1");
-const structured = model.withStructuredOutput(Schema);
+const agent = createAgent({
+  model: "gpt-4.1",
+  responseFormat: StrictSchema,
+});
+
+try {
+  const result = await agent.invoke({
+    messages: [{ role: "user", content: "Email: invalid, Age: -5" }],
+  });
+} catch (error) {
+  console.error("Validation failed:", error);
+  // Model will retry or return error
+}
 ```
 
 ## Boundaries
 
-### ✅ What Structured Output CAN Do
+### What You CAN Configure
 
-- **Enforce specific formats**: JSON objects matching schemas
-- **Validate data**: Automatic type checking and constraints
-- **Extract information**: Pull structured data from text
-- **Type-safe responses**: Full TypeScript type inference
-- **Handle complex schemas**: Nested objects, arrays, enums
-- **Combine with tools**: Use tools then return structured output
+✅ **Schema structure**: Any valid Zod schema
+✅ **Field validation**: Types, ranges, regex, etc.
+✅ **Optional vs required**: Control field presence
+✅ **Nested objects**: Complex hierarchies
+✅ **Arrays**: Lists of items
+✅ **Enums**: Restricted values
 
-### ❌ What Structured Output CANNOT Do
+### What You CANNOT Configure
 
-- **Guarantee factual accuracy**: Models can still hallucinate
-- **Handle streaming**: Returns complete objects, not streams
-- **Modify schema dynamically**: Schema is fixed at creation
-- **Access external data**: Still need tools for external sources
-- **Validate business logic**: Only validates types/structure
+❌ **Model reasoning**: Can't control how model generates data
+❌ **Guarantee 100% accuracy**: Model may still make mistakes
+❌ **Force valid data if context lacks it**: Model can't invent missing info
 
 ## Gotchas
 
-### 1. **Schema Descriptions Matter**
+### 1. Accessing Response Wrong
 
 ```typescript
-// ❌ Missing descriptions
-const BadSchema = z.object({
-  name: z.string(), // No description
-  age: z.number(),
+// ❌ Problem: Accessing wrong property
+const result = await agent.invoke(input);
+console.log(result.response);  // undefined!
+
+// ✅ Solution: Use structuredResponse
+console.log(result.structuredResponse);
+```
+
+### 2. Missing Descriptions
+
+```typescript
+// ❌ Problem: No field descriptions
+const schema = z.object({
+  date: z.string(),  // What format?
+  amount: z.number(),  // What unit?
 });
 
-// ✅ Include descriptions for better results
-const GoodSchema = z.object({
-  name: z.string().describe("Full name of the person"),
-  age: z.number().describe("Age in years"),
+// ✅ Solution: Add descriptions
+const schema = z.object({
+  date: z.string().describe("Date in YYYY-MM-DD format"),
+  amount: z.number().describe("Amount in USD"),
 });
 ```
 
-### 2. **Validation Errors Retry**
+### 3. Over-constraining
 
 ```typescript
-// When validation fails, the agent retries with error message
-// Be prepared for multiple attempts
-
-const Schema = z.object({
-  email: z.string().email(), // Strict validation
+// ❌ Problem: Too strict for model
+const schema = z.object({
+  code: z.string().regex(/^[A-Z]{2}-\d{4}-[A-Z]{3}$/),  // Very specific!
 });
 
-// If model returns invalid email, it gets error and retries
+// ✅ Solution: Validate post-processing or use looser schema
+const schema = z.object({
+  code: z.string().describe("Format: XX-0000-XXX (letters and numbers)"),
+});
 ```
 
-### 3. **Response Format vs Tools**
+### 4. Not Handling Validation Errors
 
 ```typescript
-// ❌ Can't use both responseFormat and structured tools together
+// ❌ Problem: No error handling
+const result = await agent.invoke(input);
+const data = result.structuredResponse;  // May throw!
+
+// ✅ Solution: Try/catch or check for errors
+try {
+  const result = await agent.invoke(input);
+  const data = result.structuredResponse;
+} catch (error) {
+  console.error("Failed to get structured output:", error);
+}
+```
+
+### 5. Confusing responseFormat with tools
+
+```typescript
+// ❌ Problem: Using responseFormat with tools incorrectly
 const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: MySchema,
-  tools: [structuredTool], // May conflict
+  model: "gpt-4.1",
+  tools: [searchTool],
+  responseFormat: MySchema,  // Will extract from FINAL response only
 });
+// Tools run first, then schema extracted from final response
 
-// ✅ Use toolStrategy to combine them
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: toolStrategy(MySchema),
-  tools: [searchTool], // Works fine
-});
+// ✅ This is correct if you want tools + structured final output
+// Just understand the flow
 ```
 
-### 4. **JSON Schema Needs Manual Validation**
+## Links to Documentation
 
-```typescript
-// ❌ JSON schema doesn't auto-validate
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: { type: "object", properties: { ... } },
-});
-
-// Response may not match schema perfectly
-
-// ✅ Use Zod for automatic validation
-const agent = createAgent({
-  model: "gpt-4o",
-  responseFormat: ZodSchema,
-});
-```
-
-### 5. **Not All Models Support Structured Output**
-
-```typescript
-// ❌ Older models may not support it well
-const model = await initChatModel("gpt-3.5-turbo");
-const structured = model.withStructuredOutput(Schema); // May fail
-
-// ✅ Use recent models with good structured output support
-const model = await initChatModel("gpt-4o");
-const structured = model.withStructuredOutput(Schema);
-```
-
-## Links to Full Documentation
-
-- [Structured Output Guide](https://docs.langchain.com/oss/javascript/langchain/structured-output)
+- [Structured Output Overview](https://docs.langchain.com/oss/javascript/langchain/structured-output)
 - [Model Structured Output](https://docs.langchain.com/oss/javascript/langchain/models)
-- [Tool Strategy](https://docs.langchain.com/oss/javascript/langchain/structured-output)
-- [Agents with Structured Output](https://docs.langchain.com/oss/javascript/langchain/agents)
+- [Agent Structured Output](https://docs.langchain.com/oss/javascript/langchain/agents)

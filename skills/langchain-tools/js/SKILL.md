@@ -1,525 +1,531 @@
 ---
 name: langchain-tools
-description: Define and use LangChain tools including tool decorators, schemas, tool calling patterns, and custom vs built-in tools for JavaScript/TypeScript.
+description: Define and use tools in LangChain - includes tool decorator, custom tools, built-in tools, and tool schemas
 language: js
 ---
 
 # langchain-tools (JavaScript/TypeScript)
 
----
-name: langchain-tools
-description: Define and use LangChain tools including tool decorators, schemas, tool calling patterns, and custom vs built-in tools for JavaScript/TypeScript.
-language: js
----
-
-# LangChain Tools (JavaScript/TypeScript)
-
 ## Overview
 
-Tools extend what agents can do—letting them fetch real-time data, execute code, query databases, and take actions in the world. Tools are callable functions with well-defined inputs and outputs that models can invoke based on context.
+Tools are functions that agents can execute to perform actions like fetching data, running code, or querying databases. Tools have schemas that describe their purpose and parameters, helping models understand when and how to use them.
 
-**Key concepts:**
-- Tools have a **name**, **description**, and **schema** (input parameters)
-- Models decide when to call tools and what arguments to provide
-- Tools can be synchronous or asynchronous
-- Some providers offer built-in server-side tools (web search, code interpreter)
+**Key Concepts:**
+- **tool()**: Decorator to create tools from functions
+- **Schema**: Zod schema defining tool parameters
+- **Description**: Helps model understand when to use the tool
+- **Built-in Tools**: Pre-made tools for common tasks
+
+## When to Define Custom Tools
+
+| Scenario | Create Custom Tool? | Why |
+|----------|---------------------|-----|
+| Domain-specific logic | ✅ Yes | Unique to your application |
+| Third-party API integration | ✅ Yes | Custom integration needed |
+| Database queries | ✅ Yes | Your schema/data |
+| Common utilities (search, calc) | ⚠️ Maybe | Check for existing tools first |
+| File operations | ⚠️ Maybe | Built-in filesystem tools exist |
 
 ## Decision Tables
 
-### When to use custom tools vs built-in tools
+### Tool Definition Methods
 
-| Scenario | Custom Tools | Built-in Tools |
-|----------|-------------|----------------|
-| Provider-specific features | ❌ Not available | ✅ OpenAI, Anthropic tools |
-| Custom business logic | ✅ Required | ❌ Not supported |
-| External API integration | ✅ Full control | ❌ Limited |
-| Quick prototyping | ✅ Fast setup | ✅ Zero setup |
-| Enterprise use cases | ✅ Customizable | ⚠️ Provider-dependent |
-
-### Choosing tool definition method
-
-| Method | Best For | Pros | Cons |
-|--------|----------|------|------|
-| `tool()` function | Simple tools | Clean, concise | Less control |
-| Class-based | Complex tools | Full control, stateful | More verbose |
-| JSON schema | Interoperability | Standard format | Manual validation |
+| Method | When to Use | Example |
+|--------|-------------|---------|
+| `tool()` with function | Simple tools | Basic transformations |
+| `tool()` with schema | Complex parameters | Multiple typed fields |
+| `StructuredTool` | Full control | Custom error handling |
+| Built-in tools | Common operations | Search, code execution |
 
 ## Code Examples
 
 ### Basic Tool Definition
 
 ```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
+import { tool } from "langchain";
+import { z } from "zod";
 
-// Define a simple tool
-const searchTool = tool(
-  async ({ query }: { query: string }) => {
-    // Simulated search
-    return `Search results for: ${query}`;
-  },
-  {
-    name: "search",
-    description: "Search for information on the internet",
-    schema: z.object({
-      query: z.string().describe("The search query"),
-    }),
-  }
-);
-
-// Use with a model
-import { ChatOpenAI } from "@langchain/openai";
-
-const model = new ChatOpenAI({ model: "gpt-4o" });
-const modelWithTools = model.bindTools([searchTool]);
-
-const response = await modelWithTools.invoke("Search for LangChain docs");
-console.log(response.tool_calls);
-// [{ name: 'search', args: { query: 'LangChain docs' }, id: 'call_123' }]
-```
-
-### Tool with Multiple Parameters
-
-```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-const weatherTool = tool(
-  async ({ location, units }: { location: string; units: string }) => {
-    return `Weather in ${location}: 72°${units === "celsius" ? "C" : "F"}, sunny`;
-  },
-  {
-    name: "get_weather",
-    description: "Get current weather for a location",
-    schema: z.object({
-      location: z.string().describe("City name or coordinates"),
-      units: z
-        .enum(["celsius", "fahrenheit"])
-        .default("fahrenheit")
-        .describe("Temperature units"),
-    }),
-  }
-);
-```
-
-### Tool with Custom Name
-
-```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-// By default, tool name comes from the function name
-const myTool = tool(
-  async ({ input }: { input: string }) => {
-    return `Processed: ${input}`;
-  },
-  {
-    name: "custom_tool_name", // Override default name
-    description: "A tool with a custom name",
-    schema: z.object({
-      input: z.string(),
-    }),
-  }
-);
-```
-
-### Async Tools
-
-```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-const apiTool = tool(
-  async ({ endpoint }: { endpoint: string }) => {
-    // Async operation
-    const response = await fetch(`https://api.example.com/${endpoint}`);
-    const data = await response.json();
-    return JSON.stringify(data);
-  },
-  {
-    name: "call_api",
-    description: "Call an external API",
-    schema: z.object({
-      endpoint: z.string().describe("API endpoint path"),
-    }),
-  }
-);
-```
-
-### Tool with Nested Schema
-
-```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-const complexTool = tool(
-  async ({ user, settings }: { user: any; settings: any }) => {
-    return `User ${user.name} (${user.email}) with theme ${settings.theme}`;
-  },
-  {
-    name: "update_user",
-    description: "Update user settings",
-    schema: z.object({
-      user: z.object({
-        name: z.string(),
-        email: z.string().email(),
-      }),
-      settings: z.object({
-        theme: z.enum(["light", "dark"]),
-        notifications: z.boolean(),
-      }),
-    }),
-  }
-);
-```
-
-### Binding Tools to a Model
-
-```typescript
-import { ChatOpenAI } from "@langchain/openai";
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-const calculatorTool = tool(
-  async ({ expression }: { expression: string }) => {
-    return String(eval(expression)); // Don't use eval in production!
+// Simple tool
+const calculator = tool(
+  async ({ operation, a, b }: { operation: string; a: number; b: number }) => {
+    if (operation === "add") return a + b;
+    if (operation === "multiply") return a * b;
+    throw new Error(`Unknown operation: ${operation}`);
   },
   {
     name: "calculator",
-    description: "Evaluate a mathematical expression",
+    description: "Perform mathematical calculations. Use this when you need to compute numbers.",
     schema: z.object({
-      expression: z.string().describe("Math expression to evaluate"),
+      operation: z.enum(["add", "subtract", "multiply", "divide"]).describe("The mathematical operation"),
+      a: z.number().describe("First number"),
+      b: z.number().describe("Second number"),
     }),
   }
 );
 
-const model = new ChatOpenAI({ model: "gpt-4o" });
-
-// Bind tools to the model
-const modelWithTools = model.bindTools([calculatorTool, searchTool]);
-
-// Model can now call these tools
-const response = await modelWithTools.invoke("What is 15 * 23?");
-```
-
-### Executing Tool Calls
-
-```typescript
-import { ChatOpenAI } from "@langchain/openai";
-import { ToolMessage } from "@langchain/core/messages";
-
-const model = new ChatOpenAI({ model: "gpt-4o" });
-const modelWithTools = model.bindTools([calculatorTool]);
-
-// Get model response with tool calls
-const response = await modelWithTools.invoke("What is 25 + 17?");
-
-// Execute tools manually
-const toolResults = [];
-for (const toolCall of response.tool_calls || []) {
-  if (toolCall.name === "calculator") {
-    const result = await calculatorTool.invoke(toolCall);
-    toolResults.push(result);
-  }
-}
-
-// Return results to model
-const finalResponse = await model.invoke([
-  { role: "user", content: "What is 25 + 17?" },
-  response,
-  ...toolResults,
-]);
-
-console.log(finalResponse.content); // "25 + 17 equals 42"
-```
-
-### Tool Choice (Force Tool Usage)
-
-```typescript
-import { ChatOpenAI } from "@langchain/openai";
-
-const model = new ChatOpenAI({ model: "gpt-4o" });
-
-// Force the model to use a specific tool
-const modelWithForcedTool = model.bindTools([searchTool], {
-  toolChoice: "search", // Must use this tool
+// Use with agent
+const result = await calculator.invoke({
+  operation: "add",
+  a: 5,
+  b: 3,
 });
-
-// Force any tool (but must use at least one)
-const modelWithAnyTool = model.bindTools([searchTool, weatherTool], {
-  toolChoice: "any",
-});
-
-// Let model decide (default behavior)
-const modelWithOptionalTools = model.bindTools([searchTool]);
+console.log(result); // "8"
 ```
 
-### Parallel Tool Calling
+### Tool with Detailed Schema
 
 ```typescript
-import { ChatOpenAI } from "@langchain/openai";
+import { tool } from "langchain";
+import { z } from "zod";
 
-const model = new ChatOpenAI({ model: "gpt-4o" });
-const modelWithTools = model.bindTools([weatherTool]);
-
-// Model can call multiple tools in parallel
-const response = await modelWithTools.invoke(
-  "What's the weather in Boston and Tokyo?"
-);
-
-console.log(response.tool_calls);
-// [
-//   { name: 'get_weather', args: { location: 'Boston' }, id: 'call_1' },
-//   { name: 'get_weather', args: { location: 'Tokyo' }, id: 'call_2' }
-// ]
-
-// Execute all tools (can be done in parallel)
-const results = await Promise.all(
-  response.tool_calls.map((toolCall) => weatherTool.invoke(toolCall))
-);
-```
-
-### Built-in Server-Side Tools (OpenAI)
-
-```typescript
-import { ChatOpenAI } from "@langchain/openai";
-
-// OpenAI built-in tools
-const model = new ChatOpenAI({
-  model: "gpt-4o",
-  tools: [
-    { type: "web_search" }, // Built-in web search
-    { type: "code_interpreter" }, // Built-in code execution
-  ],
-});
-
-const response = await model.invoke("Search the web for Python tutorials");
-// Model uses OpenAI's built-in web search
-```
-
-### Tool Error Handling
-
-```typescript
-import { tool } from "langchain/tools";
-import * as z from "zod";
-
-const riskyTool = tool(
-  async ({ input }: { input: string }) => {
-    if (input === "fail") {
-      throw new Error("Tool execution failed!");
-    }
-    return `Success: ${input}`;
+const searchDatabase = tool(
+  async ({ query, limit, filters }) => {
+    // Your database search logic
+    return `Found ${limit} results for: ${query}`;
   },
   {
-    name: "risky_tool",
-    description: "A tool that might fail",
+    name: "search_database",
+    description: "Search the customer database for records matching criteria",
     schema: z.object({
-      input: z.string(),
+      query: z.string().describe("Search query (keywords or customer name)"),
+      limit: z.number().default(10).describe("Maximum number of results to return"),
+      filters: z.object({
+        status: z.enum(["active", "inactive", "pending"]).optional(),
+        created_after: z.string().optional().describe("ISO date string"),
+      }).optional(),
+    }),
+  }
+);
+```
+
+### Async Tool
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+const fetchWeather = tool(
+  async ({ location }: { location: string }) => {
+    // Async API call
+    const response = await fetch(
+      `https://api.weather.com/v1/location/${location}`
+    );
+    const data = await response.json();
+    return `Temperature: ${data.temp}°F, Conditions: ${data.conditions}`;
+  },
+  {
+    name: "get_weather",
+    description: "Get current weather conditions for a location",
+    schema: z.object({
+      location: z.string().describe("City name or ZIP code"),
+    }),
+  }
+);
+```
+
+### Tool with Error Handling
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+const divisionTool = tool(
+  async ({ numerator, denominator }) => {
+    if (denominator === 0) {
+      throw new Error("Cannot divide by zero");
+    }
+    return numerator / denominator;
+  },
+  {
+    name: "divide",
+    description: "Divide two numbers",
+    schema: z.object({
+      numerator: z.number(),
+      denominator: z.number(),
     }),
   }
 );
 
-// Handle errors with middleware (see Middleware skill file)
-// Or catch manually
-try {
-  const result = await riskyTool.invoke({ input: "fail" });
-} catch (error) {
-  console.error("Tool failed:", error.message);
+// Error will be caught and returned as ToolMessage
+```
+
+### Tool with Side Effects
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+import fs from "fs/promises";
+
+const writeFile = tool(
+  async ({ filepath, content }) => {
+    await fs.writeFile(filepath, content, "utf-8");
+    return `Successfully wrote ${content.length} characters to ${filepath}`;
+  },
+  {
+    name: "write_file",
+    description: "Write content to a file. Use carefully as this modifies the filesystem.",
+    schema: z.object({
+      filepath: z.string().describe("Path to the file"),
+      content: z.string().describe("Content to write"),
+    }),
+  }
+);
+```
+
+### Tool with External Dependencies
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+import axios from "axios";
+
+const githubSearch = tool(
+  async ({ query, language }) => {
+    const response = await axios.get(
+      "https://api.github.com/search/repositories",
+      {
+        params: { q: `${query} language:${language}`, sort: "stars" },
+        headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+      }
+    );
+    
+    const repos = response.data.items.slice(0, 5);
+    return repos.map(r => `${r.full_name} (⭐ ${r.stargazers_count})`).join("\n");
+  },
+  {
+    name: "search_github",
+    description: "Search GitHub repositories",
+    schema: z.object({
+      query: z.string().describe("Search query"),
+      language: z.string().optional().describe("Programming language filter"),
+    }),
+  }
+);
+```
+
+### Tool with Complex Return Type
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+const analyzeText = tool(
+  async ({ text }) => {
+    return JSON.stringify({
+      word_count: text.split(/\s+/).length,
+      char_count: text.length,
+      sentences: text.split(/[.!?]+/).length,
+      avg_word_length: text.split(/\s+/).reduce((sum, w) => sum + w.length, 0) / text.split(/\s+/).length,
+    });
+  },
+  {
+    name: "analyze_text",
+    description: "Analyze text statistics",
+    schema: z.object({
+      text: z.string().describe("Text to analyze"),
+    }),
+  }
+);
+```
+
+### Tool with Runtime Configuration
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+function createDatabaseTool(connectionString: string) {
+  return tool(
+    async ({ query }) => {
+      // Use connectionString to connect to DB
+      const results = await db.query(query);
+      return JSON.stringify(results);
+    },
+    {
+      name: "query_database",
+      description: "Execute SQL query on the database",
+      schema: z.object({
+        query: z.string().describe("SQL query to execute"),
+      }),
+    }
+  );
 }
+
+// Create tool with specific configuration
+const prodDbTool = createDatabaseTool(process.env.PROD_DB_URL);
+const devDbTool = createDatabaseTool(process.env.DEV_DB_URL);
+```
+
+### Multiple Related Tools
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+// Toolkit pattern: group of related tools
+const emailTools = {
+  send: tool(
+    async ({ to, subject, body }) => {
+      // Send email logic
+      return `Email sent to ${to}`;
+    },
+    {
+      name: "send_email",
+      description: "Send an email message",
+      schema: z.object({
+        to: z.string().email(),
+        subject: z.string(),
+        body: z.string(),
+      }),
+    }
+  ),
+  
+  read: tool(
+    async ({ folder, limit }) => {
+      // Read emails logic
+      return `Retrieved ${limit} emails from ${folder}`;
+    },
+    {
+      name: "read_emails",
+      description: "Read emails from a folder",
+      schema: z.object({
+        folder: z.string().default("inbox"),
+        limit: z.number().default(10),
+      }),
+    }
+  ),
+};
+
+// Use all email tools
+const agent = createAgent({
+  model: "gpt-4.1",
+  tools: Object.values(emailTools),
+});
+```
+
+### Tool with Response Format Validation
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+const getUser = tool(
+  async ({ userId }) => {
+    const user = await db.users.findById(userId);
+    
+    // Return structured data as JSON string
+    return JSON.stringify({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      created: user.createdAt.toISOString(),
+    });
+  },
+  {
+    name: "get_user",
+    description: "Get user information by ID",
+    schema: z.object({
+      userId: z.string().describe("User ID to lookup"),
+    }),
+  }
+);
+```
+
+### Tool with Streaming Updates
+
+```typescript
+import { tool } from "langchain";
+import { z } from "zod";
+
+const processLargeFile = tool(
+  async ({ filepath }, { runtime }) => {
+    const totalLines = 1000;
+    
+    for (let i = 0; i < totalLines; i += 100) {
+      // Stream progress updates
+      await runtime.stream_writer.write({
+        type: "progress",
+        data: { processed: i, total: totalLines },
+      });
+      
+      // Process chunk
+      await processChunk(i, i + 100);
+    }
+    
+    return "Processing complete";
+  },
+  {
+    name: "process_file",
+    description: "Process a large file with progress updates",
+    schema: z.object({
+      filepath: z.string(),
+    }),
+  }
+);
 ```
 
 ## Boundaries
 
-### ✅ What Tools CAN Do
+### What You CAN Configure
 
-- **Execute arbitrary code**: Any JavaScript function
-- **Make API calls**: HTTP requests, database queries, etc.
-- **Access external services**: Files, databases, web APIs
-- **Return structured data**: JSON, strings, numbers, etc.
-- **Support async operations**: Promises and async/await
-- **Validate inputs**: Using Zod schemas
-- **Be stateful**: Store data between calls (if needed)
+✅ **Function logic**: Any JavaScript/TypeScript code
+✅ **Parameters**: Via Zod schema with descriptions
+✅ **Name and description**: Guide model's tool selection
+✅ **Return value**: Any serializable data (string, JSON, etc.)
+✅ **Async operations**: Tools can be async
+✅ **Error handling**: Throw errors or return error messages
 
-### ❌ What Tools CANNOT Do
+### What You CANNOT Configure
 
-- **Run without being called by model**: Models must explicitly invoke them
-- **Access agent state directly**: Must receive state as parameters
-- **Modify model behavior**: Tools provide data, not control
-- **Guarantee execution order**: Model decides order (unless forced)
-- **Handle streaming automatically**: Return complete results, not streams
-- **Persist data automatically**: Must use external storage
+❌ **When model calls tool**: Model decides based on context
+❌ **Tool call order**: Model determines execution flow
+❌ **Parameter values**: Model generates based on schema
+❌ **Response format from model**: Tool returns, model interprets
 
 ## Gotchas
 
-### 1. **Descriptions Are Critical for Tool Selection**
+### 1. Poor Tool Descriptions
 
 ```typescript
-// ❌ Vague description
+// ❌ Problem: Vague description
 const badTool = tool(
-  async ({ input }: { input: string }) => {
-    return input.toUpperCase();
-  },
+  async ({ data }) => "result",
   {
-    name: "process",
-    description: "Process input", // Too vague!
-    schema: z.object({ input: z.string() }),
+    name: "tool",
+    description: "Does something with data", // Too vague!
+    schema: z.object({ data: z.string() }),
   }
 );
 
-// ✅ Clear, specific description
+// ✅ Solution: Specific, actionable description
 const goodTool = tool(
-  async ({ input }: { input: string }) => {
-    return input.toUpperCase();
-  },
+  async ({ query }) => searchDatabase(query),
   {
-    name: "to_uppercase",
-    description: "Convert a string to uppercase letters",
+    name: "search_customers",
+    description: "Search customer database by name, email, or ID. Returns customer records with contact information. Use this when user asks about customer data.",
     schema: z.object({
-      input: z.string().describe("The text to convert"),
+      query: z.string().describe("Customer name, email, or ID to search for"),
     }),
   }
 );
 ```
 
-### 2. **Schema Must Match Function Signature**
+### 2. Missing Parameter Descriptions
 
 ```typescript
-// ❌ Mismatch between schema and function
-const brokenTool = tool(
-  async ({ x, y }: { x: number; y: number }) => {
-    return x + y;
-  },
-  {
-    name: "add",
-    description: "Add numbers",
-    schema: z.object({
-      a: z.number(), // Schema says 'a' and 'b'
-      b: z.number(), // but function expects 'x' and 'y'
-    }),
-  }
-);
-
-// ✅ Schema matches function
-const fixedTool = tool(
-  async ({ x, y }: { x: number; y: number }) => {
-    return x + y;
-  },
-  {
-    name: "add",
-    description: "Add two numbers",
-    schema: z.object({
-      x: z.number().describe("First number"),
-      y: z.number().describe("Second number"),
-    }),
-  }
-);
-```
-
-### 3. **Tool Names Must Be Unique**
-
-```typescript
-// ❌ Duplicate tool names cause conflicts
-const tool1 = tool(async () => "result 1", {
-  name: "my_tool",
-  description: "First tool",
-  schema: z.object({}),
+// ❌ Problem: No field descriptions
+const badSchema = z.object({
+  query: z.string(),
+  limit: z.number(),
 });
 
-const tool2 = tool(async () => "result 2", {
-  name: "my_tool", // Same name!
-  description: "Second tool",
-  schema: z.object({}),
-});
-
-// ✅ Unique names
-const toolA = tool(async () => "result A", {
-  name: "tool_a",
-  description: "Tool A",
-  schema: z.object({}),
-});
-
-const toolB = tool(async () => "result B", {
-  name: "tool_b",
-  description: "Tool B",
-  schema: z.object({}),
+// ✅ Solution: Describe each field
+const goodSchema = z.object({
+  query: z.string().describe("Search terms or keywords"),
+  limit: z.number().describe("Maximum results to return (1-100)"),
 });
 ```
 
-### 4. **Tools Must Return Serializable Data**
+### 3. Non-Serializable Return Values
 
 ```typescript
-// ❌ Returning non-serializable objects
+// ❌ Problem: Returning complex objects
 const badTool = tool(
-  async () => {
-    return new Date(); // Not JSON-serializable!
-  },
-  {
-    name: "get_date",
-    description: "Get current date",
-    schema: z.object({}),
-  }
+  async () => new Date(), // Date not serializable!
+  { name: "get_time", description: "Get time", schema: z.object({}) }
 );
 
-// ✅ Return strings or JSON-serializable objects
+// ✅ Solution: Return strings or JSON
 const goodTool = tool(
-  async () => {
-    return new Date().toISOString(); // String
-  },
+  async () => new Date().toISOString(),
+  { name: "get_time", description: "Get current time", schema: z.object({}) }
+);
+
+// Or stringify objects
+const dataTool = tool(
+  async () => JSON.stringify({ timestamp: Date.now(), user: getCurrentUser() }),
+  { name: "get_data", description: "Get data", schema: z.object({}) }
+);
+```
+
+### 4. Tools Without Schemas
+
+```typescript
+// ❌ Problem: No schema
+const badTool = tool(
+  async (input: any) => "result",
+  { name: "tool", description: "A tool" }
+  // Missing schema!
+);
+
+// ✅ Solution: Always provide schema
+const goodTool = tool(
+  async ({ input }) => "result",
   {
-    name: "get_date",
-    description: "Get current date as ISO string",
-    schema: z.object({}),
+    name: "tool",
+    description: "A tool",
+    schema: z.object({ input: z.string() }), // Clear schema
   }
 );
 ```
 
-### 5. **Async Tools Need Await**
+### 5. Forgetting Async
 
 ```typescript
-// ❌ Forgetting await
-const asyncTool = tool(
-  async ({ url }: { url: string }) => {
-    const response = await fetch(url);
-    return response.json();
+// ❌ Problem: Not awaiting async operations
+const badTool = tool(
+  ({ url }) => {
+    fetch(url); // Not awaited!
+    return "done";
   },
   {
-    name: "fetch_data",
-    description: "Fetch data from URL",
+    name: "fetch_url",
+    description: "Fetch URL",
     schema: z.object({ url: z.string() }),
   }
 );
 
-// When calling the tool:
-// ❌ Wrong
-const result = asyncTool.invoke({ url: "..." }); // Returns Promise!
-
-// ✅ Correct
-const result = await asyncTool.invoke({ url: "..." });
-```
-
-### 6. **Zod Schemas Provide Validation**
-
-```typescript
-const strictTool = tool(
-  async ({ age }: { age: number }) => {
-    return `Age: ${age}`;
+// ✅ Solution: Use async/await
+const goodTool = tool(
+  async ({ url }) => {
+    const response = await fetch(url);
+    const data = await response.text();
+    return data;
   },
   {
-    name: "set_age",
-    description: "Set user age",
-    schema: z.object({
-      age: z.number().min(0).max(150), // Validation rules
-    }),
+    name: "fetch_url",
+    description: "Fetch URL content",
+    schema: z.object({ url: z.string().url() }),
+  }
+);
+```
+
+### 6. Tool Names with Spaces or Special Chars
+
+```typescript
+// ❌ Problem: Invalid tool name
+const badTool = tool(
+  async () => "result",
+  {
+    name: "Get Weather!", // Special chars not allowed
+    description: "Get weather",
+    schema: z.object({}),
   }
 );
 
-// Invalid input will be caught by Zod
-// await strictTool.invoke({ age: 200 }); // Error: age must be ≤ 150
+// ✅ Solution: Use snake_case or camelCase
+const goodTool = tool(
+  async () => "result",
+  {
+    name: "get_weather", // Valid name
+    description: "Get weather",
+    schema: z.object({}),
+  }
+);
 ```
 
-## Links to Full Documentation
+## Links to Documentation
 
 - [Tools Overview](https://docs.langchain.com/oss/javascript/langchain/tools)
-- [Tool Calling Guide](https://docs.langchain.com/oss/javascript/langchain/models)
-- [All Tool Integrations](https://docs.langchain.com/oss/javascript/integrations/tools/index)
-- [Custom Tools](https://docs.langchain.com/oss/javascript/contributing/implement-langchain)
+- [Tool Integrations](https://docs.langchain.com/oss/javascript/integrations/tools/index)
+- [Custom Tools Guide](https://docs.langchain.com/oss/javascript/integrations/chat/openai)

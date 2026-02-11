@@ -1,385 +1,243 @@
 ---
 name: langgraph-streaming
-description: Streaming in LangGraph: using different stream modes (values, updates, messages, custom, debug), streaming LLM tokens, streaming state updates, and custom streaming events
+description: Streaming real-time updates from LangGraph: stream modes (values, updates, messages, custom, debug) for responsive UX
 language: python
 ---
 
 # langgraph-streaming (Python)
 
-# LangGraph Streaming
+---
+name: langgraph-streaming
+description: Streaming real-time updates from LangGraph - stream modes (values, updates, messages, custom, debug) for responsive UX
+---
 
 ## Overview
 
-Streaming in LangGraph enables real-time updates during graph execution. Instead of waiting for the entire workflow to complete, you can display progress, stream LLM tokens, and provide immediate feedback to users.
+LangGraph's streaming system surfaces real-time updates during graph execution, crucial for responsive LLM applications. Stream graph state, LLM tokens, or custom data as it's generated.
 
-## Stream Modes
+## Decision Table: Stream Modes
 
-LangGraph supports multiple streaming modes, each providing different types of updates.
+| Mode | What it Streams | Use Case |
+|------|----------------|----------|
+| `values` | Full state after each step | Monitor complete state changes |
+| `updates` | State deltas after each step | Track incremental updates |
+| `messages` | LLM tokens + metadata | Chat UIs, token streaming |
+| `custom` | User-defined data | Progress indicators, logs |
+| `debug` | All execution details | Debugging, detailed tracing |
 
-### Available Stream Modes
+## Code Examples
 
-| Mode | What It Streams | Use Case |
-|------|-----------------|----------|
-| `values` | Full state after each step | Track complete state changes |
-| `updates` | Only state updates from each node | Monitor incremental changes |
-| `messages` | LLM tokens and metadata | Real-time token streaming |
-| `custom` | Custom data from nodes | Progress signals, logs |
-| `debug` | Detailed execution traces | Debugging and monitoring |
-
-## Basic Streaming
-
-### values Mode (Default)
-
-Streams the complete state after each super-step.
+### Stream State Values
 
 ```python
-for state in graph.stream({"messages": [("user", "Hello")]}):
-    print(state)
-# Output: Full state after each step
-# {'messages': [('user', 'Hello'), ('assistant', 'Hi!')]}
+from langgraph.graph import StateGraph, START, END
+
+def process(state):
+    return {"count": state["count"] + 1}
+
+graph = StateGraph(State).add_node("process", process).add_edge(START, "process").add_edge("process", END).compile()
+
+# Stream full state after each step
+for chunk in graph.stream(
+    {"count": 0},
+    stream_mode="values"
+):
+    print(chunk)  # {'count': 0}, then {'count': 1}
 ```
 
-### updates Mode
-
-Streams only the updates from each node.
+### Stream State Updates (Deltas)
 
 ```python
-for update in graph.stream(
-    {"messages": [("user", "Hello")]},
+# Stream only the changes
+for chunk in graph.stream(
+    {"count": 0},
     stream_mode="updates"
 ):
-    print(update)
-# Output: {node_name: {state_updates}}
-# {'chatbot': {'messages': [('assistant', 'Hi!')]}}
+    print(chunk)  # {"process": {"count": 1}}
 ```
 
-## Streaming LLM Tokens
-
-### messages Mode
-
-Stream LLM tokens as they're generated.
+### Stream LLM Tokens
 
 ```python
-for token, metadata in graph.stream(
-    {"messages": [("user", "Tell me a story")]},
-    stream_mode="messages"
-):
-    print(token, end="", flush=True)
-# Output: Once upon a time...
-```
+from langchain.chat_models import init_chat_model
 
-### Complete Token Streaming Example
+model = init_chat_model("gpt-4")
 
-```python
-from langgraph.graph import StateGraph, MessagesState, START, END
-from langchain_openai import ChatOpenAI
-
-def chatbot(state: MessagesState):
-    model = ChatOpenAI(model="gpt-4", streaming=True)
+def llm_node(state):
     response = model.invoke(state["messages"])
     return {"messages": [response]}
 
-builder = StateGraph(MessagesState)
-builder.add_node("chatbot", chatbot)
-builder.add_edge(START, "chatbot")
-builder.add_edge("chatbot", END)
+graph = StateGraph(State).add_node("llm", llm_node).compile()
 
-graph = builder.compile()
-
-# Stream tokens
-print("AI: ", end="", flush=True)
-for token, metadata in graph.stream(
-    {"messages": [("user", "Write a haiku")]},
+# Stream LLM tokens as they're generated
+for chunk in graph.stream(
+    {"messages": [HumanMessage("Hello")]},
     stream_mode="messages"
 ):
-    print(token, end="", flush=True)
-print()  # New line
+    token, metadata = chunk
+    if hasattr(token, "content"):
+        print(token.content, end="", flush=True)
 ```
 
-## Custom Streaming
-
-Stream custom data from within your nodes using a stream writer.
-
-### Using StreamWriter
+### Stream Custom Data
 
 ```python
-from langgraph.types import StreamWriter
+from langgraph.config import get_stream_writer
 
-def progress_node(state, *, writer: StreamWriter):
-    """Node that emits custom progress updates."""
-    writer("Starting data processing...")
+def my_node(state):
+    writer = get_stream_writer()
     
-    # Do some work
-    for i in range(5):
-        writer(f"Processing item {i+1}/5")
+    # Emit custom updates
+    writer("Processing step 1...")
+    # Do work
+    writer("Processing step 2...")
+    # More work
+    writer("Complete!")
     
-    writer("Processing complete!")
-    return {"status": "done"}
+    return {"result": "done"}
 
-# Stream custom data
-for event in graph.stream(
-    {"input": "data"},
+graph = StateGraph(State).add_node("work", my_node).compile()
+
+for chunk in graph.stream(
+    {"data": "test"},
     stream_mode="custom"
 ):
-    print(f"Progress: {event}")
+    print(chunk)  # "Processing step 1...", etc.
 ```
 
-### Custom + Updates Modes Together
+### Multiple Stream Modes
 
 ```python
 # Stream multiple modes simultaneously
-for mode, data in graph.stream(
-    {"messages": [("user", "Hello")]},
-    stream_mode=["updates", "custom"]
+for mode, chunk in graph.stream(
+    {"messages": [HumanMessage("Hi")]},
+    stream_mode=["updates", "messages", "custom"]
 ):
-    if mode == "updates":
-        print(f"Node update: {data}")
-    elif mode == "custom":
-        print(f"Custom event: {data}")
+    print(f"{mode}: {chunk}")
 ```
 
-## Debug Mode
-
-Get detailed execution information for debugging.
+### Async Streaming
 
 ```python
-for event in graph.stream(
-    {"messages": [("user", "Hello")]},
-    stream_mode="debug"
+async for chunk in graph.astream(
+    {"count": 0},
+    stream_mode="values"
 ):
-    print(event)
-# Output includes:
-# - Node names
-# - Input/output data
-# - Execution timing
-# - State changes
-# - Errors and warnings
+    print(chunk)
 ```
 
-## Streaming with Configuration
-
-### With Thread ID
+### Stream with Subgraphs
 
 ```python
-config = {"configurable": {"thread_id": "thread-1"}}
-
-for state in graph.stream(
-    {"messages": [("user", "Hello")]},
-    config=config,
-    stream_mode="updates"
+# Include subgraph outputs
+for chunk in graph.stream(
+    {"data": "test"},
+    stream_mode="updates",
+    subgraphs=True  # Stream from nested graphs too
 ):
-    print(state)
+    print(chunk)
 ```
 
-### With Async Streaming
+### Stream with Interrupts
 
 ```python
-async for state in graph.astream(
-    {"messages": [("user", "Hello")]},
-    stream_mode="updates"
+async for metadata, mode, chunk in graph.astream(
+    {"query": "test"},
+    stream_mode=["messages", "updates"],
+    subgraphs=True,
+    config={"configurable": {"thread_id": "1"}}
 ):
-    print(state)
+    if mode == "messages":
+        # Handle streaming LLM content
+        msg, _ = chunk
+        if hasattr(msg, "content"):
+            print(msg.content, end="")
+    
+    elif mode == "updates":
+        # Check for interrupts
+        if "__interrupt__" in chunk:
+            # Handle interrupt
+            interrupt_info = chunk["__interrupt__"][0].value
+            user_input = input(f"Approve? {interrupt_info}: ")
+            # Resume
+            break
 ```
 
-## Complete Examples
+## Boundaries
 
-### Chat with Token Streaming
+### What You CAN Configure
+
+✅ Choose stream modes
+✅ Stream multiple modes simultaneously
+✅ Emit custom data from nodes
+✅ Stream from subgraphs
+✅ Combine streaming with interrupts
+
+### What You CANNOT Configure
+
+❌ Modify streaming protocol
+❌ Change when checkpoints are created
+❌ Alter token streaming format
+
+## Gotchas
+
+### 1. Messages Mode Requires LLM Invocation
 
 ```python
-from langgraph.graph import StateGraph, MessagesState, START, END
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_openai import ChatOpenAI
+# ❌ WRONG - No LLM called, nothing streamed
+def node(state):
+    return {"output": "static text"}
 
-def chatbot(state: MessagesState):
-    model = ChatOpenAI(model="gpt-4", streaming=True)
-    response = model.invoke(state["messages"])
+for chunk in graph.stream({}, stream_mode="messages"):
+    print(chunk)  # Nothing!
+
+# ✅ CORRECT - LLM invoked
+def node(state):
+    response = model.invoke(state["messages"])  # LLM call
     return {"messages": [response]}
-
-builder = StateGraph(MessagesState)
-builder.add_node("chatbot", chatbot)
-builder.add_edge(START, "chatbot")
-builder.add_edge("chatbot", END)
-
-graph = builder.compile(checkpointer=MemorySaver())
-
-# Interactive chat with streaming
-thread_id = "user-123"
-while True:
-    user_input = input("You: ")
-    if user_input.lower() == "quit":
-        break
-    
-    print("AI: ", end="", flush=True)
-    for token, _ in graph.stream(
-        {"messages": [("user", user_input)]},
-        config={"configurable": {"thread_id": thread_id}},
-        stream_mode="messages"
-    ):
-        print(token, end="", flush=True)
-    print()  # New line
 ```
 
-### Progress Bar with Custom Streaming
+### 2. Custom Mode Needs Stream Writer
 
 ```python
-from langgraph.types import StreamWriter
-from tqdm import tqdm
+# ❌ WRONG - No writer, nothing streamed
+def node(state):
+    print("Processing...")  # Not streamed!
+    return {"data": "done"}
 
-def processing_node(state, *, writer: StreamWriter):
-    """Node with progress updates."""
-    total_items = 100
-    
-    for i in range(total_items):
-        # Do work
-        result = process_item(i)
-        
-        # Emit progress
-        writer({"progress": i + 1, "total": total_items})
-    
-    return {"results": "done"}
+# ✅ CORRECT
+from langgraph.config import get_stream_writer
 
-# Stream with progress bar
-progress_bar = None
-for event in graph.stream(
-    {"input": "data"},
-    stream_mode="custom"
-):
-    if progress_bar is None and "total" in event:
-        progress_bar = tqdm(total=event["total"])
-    
-    if progress_bar and "progress" in event:
-        progress_bar.update(1)
-
-if progress_bar:
-    progress_bar.close()
+def node(state):
+    writer = get_stream_writer()
+    writer("Processing...")  # Streamed!
+    return {"data": "done"}
 ```
 
-### Multi-Agent with Update Streaming
+### 3. Stream Modes Are Lists
 
 ```python
-def researcher(state):
-    return {"messages": ["Research complete"], "current_agent": "writer"}
+# ❌ WRONG - Single string
+graph.stream({}, stream_mode="updates, messages")
 
-def writer(state):
-    return {"messages": ["Draft written"], "current_agent": "reviewer"}
-
-def reviewer(state):
-    return {"messages": ["Review complete"], "done": True}
-
-# Stream updates to show which agent is working
-for update in graph.stream(
-    {"messages": [], "current_agent": "researcher"},
-    stream_mode="updates"
-):
-    node_name = list(update.keys())[0]
-    print(f"Agent '{node_name}' completed")
-    print(f"Output: {update[node_name]}")
-    print("---")
+# ✅ CORRECT - List
+graph.stream({}, stream_mode=["updates", "messages"])
 ```
 
-## Streaming from Subgraphs
-
-Streaming works automatically with subgraphs - updates from nested graphs are included.
+### 4. Async Stream Requires Await
 
 ```python
-# Parent graph streams updates from both parent and subgraph nodes
-for update in parent_graph.stream(input, stream_mode="updates"):
-    print(f"Update from: {list(update.keys())}")
-    # Shows updates from both parent nodes and subgraph nodes
+# ❌ WRONG
+for chunk in graph.astream({}):  # SyntaxError!
+    print(chunk)
+
+# ✅ CORRECT
+async for chunk in graph.astream({}):
+    print(chunk)
 ```
 
-## Decision Table: Which Stream Mode?
+## Links
 
-| Use Case | Stream Mode | Why |
-|----------|-------------|-----|
-| Show full state changes | `values` | Complete state visibility |
-| Track node completion | `updates` | See which nodes finished |
-| Display LLM output in real-time | `messages` | Token-by-token streaming |
-| Progress bars and status | `custom` | Custom progress signals |
-| Debug execution issues | `debug` | Detailed execution traces |
-| Multiple needs | `["updates", "custom"]` | Combine modes |
-
-## What You Can Do
-
-✅ **Stream state updates** in real-time  
-✅ **Stream LLM tokens** as they're generated  
-✅ **Emit custom events** from nodes  
-✅ **Monitor execution** with debug mode  
-✅ **Combine multiple stream modes** simultaneously  
-✅ **Stream from subgraphs** automatically  
-✅ **Use async streaming** with astream()  
-✅ **Track progress** with custom events  
-
-## What You Cannot Do
-
-❌ **Stream without calling .stream()**: Use stream() not invoke()  
-❌ **Modify stream data**: Streams are read-only  
-❌ **Stream backwards**: Streaming is forward-only  
-❌ **Buffer entire stream**: Process as you receive  
-❌ **Use messages mode without LLM**: LLM must support streaming  
-
-## Common Gotchas
-
-### 1. **Using invoke() Instead of stream()**
-
-```python
-# ❌ No streaming - waits for completion
-result = graph.invoke(input)
-
-# ✅ Stream updates
-for state in graph.stream(input):
-    print(state)
-```
-
-### 2. **Wrong Mode for LLM Tokens**
-
-```python
-# ❌ Gets full state, not tokens
-for state in graph.stream(input, stream_mode="values"):
-    print(state)
-
-# ✅ Use messages mode for tokens
-for token, _ in graph.stream(input, stream_mode="messages"):
-    print(token, end="", flush=True)
-```
-
-### 3. **Forgetting to Flush Output**
-
-```python
-# ❌ Output buffered - appears delayed
-for token, _ in graph.stream(input, stream_mode="messages"):
-    print(token, end="")
-
-# ✅ Flush immediately
-for token, _ in graph.stream(input, stream_mode="messages"):
-    print(token, end="", flush=True)
-```
-
-### 4. **LLM Not Configured for Streaming**
-
-```python
-# ❌ LLM doesn't stream
-model = ChatOpenAI(model="gpt-4")  # streaming=False by default
-
-# ✅ Enable streaming
-model = ChatOpenAI(model="gpt-4", streaming=True)
-```
-
-### 5. **Not Using Keyword-Only Args for Writer**
-
-```python
-# ❌ Wrong signature
-def node(state, writer):
-    pass
-
-# ✅ Correct - writer is keyword-only
-def node(state, *, writer: StreamWriter):
-    pass
-```
-
-## Related Documentation
-
-- [LangGraph Graph API](/langgraph-graph-api/) - invoke() and stream() methods
-- [LangGraph Workflows](/langgraph-workflows/) - Building graphs that stream
-- [Official Docs - Streaming](https://python.langchain.com/docs/langgraph/concepts/streaming)
-- [Official Docs - Custom Streaming](https://python.langchain.com/docs/langgraph/how-tos/streaming-custom)
+- [Streaming Guide](https://docs.langchain.com/oss/python/langgraph/streaming)
+- [Stream Modes](https://docs.langchain.com/oss/python/langgraph/streaming#supported-stream-modes)
+- [Custom Streaming](https://docs.langchain.com/oss/python/langgraph/streaming)

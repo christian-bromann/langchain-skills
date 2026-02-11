@@ -1,423 +1,409 @@
 ---
 name: langgraph-graph-api
-description: Using the LangGraph Graph API: compiling graphs, invoke vs stream methods, configuration with thread_id, and graph visualization
+description: Building graphs with StateGraph, nodes, edges, START/END nodes, and the Command API for combining control flow with state updates
 language: python
 ---
 
 # langgraph-graph-api (Python)
 
-# LangGraph Graph API
+---
+name: langgraph-graph-api
+description: Building graphs with StateGraph, nodes, edges, START/END nodes, and the Command API for combining control flow with state updates
+---
 
 ## Overview
 
-The Graph API is how you execute compiled LangGraph workflows. After building and compiling a graph, you use methods like `invoke()`, `stream()`, and `batch()` to run it with different execution patterns.
+The LangGraph Graph API allows you to define agent workflows as directed graphs composed of **nodes** (functions) and **edges** (control flow). This provides fine-grained control over agent orchestration.
 
-## Graph Compilation
+**Core Components:**
+- **StateGraph**: Main class for building stateful graphs
+- **Nodes**: Functions that perform work and update state
+- **Edges**: Define execution order (static or conditional)
+- **START/END**: Special nodes marking graph entry and exit points
+- **Command**: Combine state updates with dynamic routing
 
-Before using a graph, you must compile it from a builder.
+## Decision Table: Edge Types
+
+| Need | Edge Type | When to Use |
+|------|-----------|-------------|
+| Always go to same node | `add_edge()` | Fixed, deterministic flow |
+| Route based on state | `add_conditional_edges()` | Dynamic branching logic |
+| Fan-out to multiple nodes | `Send` API | Map-reduce, parallel execution |
+| Update state AND route | `Command` | Combine logic in single node |
+
+## Key Concepts
+
+### 1. Graph Execution Model
+
+LangGraph uses a **message-passing** model inspired by Google's Pregel:
+- Execution proceeds in **super-steps** (discrete iterations)
+- Nodes in parallel are part of the same super-step
+- Sequential nodes belong to separate super-steps
+- Graph ends when all nodes are inactive and no messages in transit
+
+### 2. Nodes
+
+**Nodes** are Python functions that:
+- Receive the current state as input
+- Perform computation or side effects
+- Return state updates (partial or full)
 
 ```python
-from langgraph.graph import StateGraph, START, END, MessagesState
-from langgraph.checkpoint.memory import MemorySaver
-
-# Build graph
-builder = StateGraph(MessagesState)
-builder.add_node("chatbot", chatbot_node)
-builder.add_edge(START, "chatbot")
-builder.add_edge("chatbot", END)
-
-# Compile (with optional checkpointer)
-graph = builder.compile(checkpointer=MemorySaver())
+def my_node(state: State) -> dict:
+    """Nodes are just functions!"""
+    return {"key": "updated_value"}
 ```
 
-### Compilation Options
+### 3. Edges
+
+| Edge Type | Description | Example |
+|-----------|-------------|---------|
+| **Static** | Always routes to same node | `add_edge("A", "B")` |
+| **Conditional** | Routes based on state/logic | `add_conditional_edges("A", router)` |
+| **Dynamic (Send)** | Fan-out to multiple nodes | `Send("worker", {...})` |
+| **Command** | State update + routing | `return Command(goto="B")` |
+
+### 4. Special Nodes
+
+- **START**: Entry point of the graph (virtual node)
+- **END**: Terminal node (graph halts)
+
+## Code Examples
+
+### Basic Graph with Static Edges
 
 ```python
-# No persistence
-graph = builder.compile()
+from langgraph.graph import StateGraph, START, END
+from typing_extensions import TypedDict
 
-# With checkpointer for persistence
-from langgraph.checkpoint.memory import MemorySaver
-graph = builder.compile(checkpointer=MemorySaver())
+# 1. Define state
+class State(TypedDict):
+    input: str
+    output: str
 
-# With memory store
-from langgraph.store.memory import InMemoryStore
-graph = builder.compile(
-    checkpointer=MemorySaver(),
-    store=InMemoryStore()
+# 2. Define nodes
+def process_input(state: State) -> dict:
+    return {"output": f"Processed: {state['input']}"}
+
+def finalize(state: State) -> dict:
+    return {"output": state["output"].upper()}
+
+# 3. Build graph
+graph = (
+    StateGraph(State)
+    .add_node("process", process_input)
+    .add_node("finalize", finalize)
+    .add_edge(START, "process")       # Entry point
+    .add_edge("process", "finalize")  # Static edge
+    .add_edge("finalize", END)        # Exit point
+    .compile()
 )
 
-# With interrupts (human-in-the-loop)
-graph = builder.compile(
-    checkpointer=MemorySaver(),
-    interrupt_before=["approval_node"],
-    interrupt_after=["sensitive_action"]
-)
+# 4. Execute
+result = graph.invoke({"input": "hello"})
+print(result["output"])  # "PROCESSED: HELLO"
 ```
 
-## Invoke: Single Execution
-
-`invoke()` runs the graph once and returns the final state.
-
-### Basic Invoke
+### Conditional Edges (Branching)
 
 ```python
-# Simple invocation
-result = graph.invoke({"messages": [("user", "Hello")]})
-print(result)
-# {'messages': [('user', 'Hello'), ('assistant', 'Hi there!')]}
-```
+from typing import Literal
+from langgraph.graph import StateGraph, START, END
 
-### Invoke with Config
+class State(TypedDict):
+    query: str
+    route: str
 
-```python
-# With thread_id for persistence
-result = graph.invoke(
-    {"messages": [("user", "Hello")]},
-    config={"configurable": {"thread_id": "conversation-1"}}
-)
+def classify(state: State) -> dict:
+    """Classify the query type."""
+    if "weather" in state["query"].lower():
+        return {"route": "weather"}
+    return {"route": "general"}
 
-# With custom configuration
-result = graph.invoke(
-    {"messages": [("user", "Hello")]},
-    config={
-        "configurable": {
-            "thread_id": "thread-123",
-            "user_id": "user-456"
-        },
-        "recursion_limit": 100,
-        "tags": ["production", "chatbot"]
-    }
-)
-```
+def weather_node(state: State) -> dict:
+    return {"result": "Sunny, 72°F"}
 
-## Stream: Incremental Updates
+def general_node(state: State) -> dict:
+    return {"result": "General response"}
 
-`stream()` yields state updates as the graph executes, enabling real-time progress.
+# Router function
+def route_query(state: State) -> Literal["weather", "general"]:
+    """Decide which node to execute next."""
+    return state["route"]
 
-### Basic Streaming
-
-```python
-# Stream with default mode ("values")
-for state in graph.stream({"messages": [("user", "Hello")]}):
-    print(state)
-# First iteration: partial state
-# Second iteration: more updates
-# Final iteration: complete state
-```
-
-### Stream Modes
-
-```python
-# Mode: "values" - Full state after each step
-for state in graph.stream(input, stream_mode="values"):
-    print("Full state:", state)
-
-# Mode: "updates" - Only the updates from each node
-for update in graph.stream(input, stream_mode="updates"):
-    print("Update:", update)
-
-# Mode: "messages" - LLM token streaming
-for token, metadata in graph.stream(input, stream_mode="messages"):
-    print(token, end="", flush=True)
-
-# Mode: "debug" - Detailed execution info
-for event in graph.stream(input, stream_mode="debug"):
-    print("Debug:", event)
-
-# Multiple modes
-for event in graph.stream(input, stream_mode=["values", "updates"]):
-    print(event)
-```
-
-### Stream with Config
-
-```python
-config = {"configurable": {"thread_id": "thread-1"}}
-
-for state in graph.stream(
-    {"messages": [("user", "Hello")]},
-    config=config,
-    stream_mode="updates"
-):
-    print(f"Node: {list(state.keys())[0]}")
-    print(f"Output: {state}")
-```
-
-## Async Operations
-
-Both `invoke()` and `stream()` have async variants.
-
-```python
-# Async invoke
-result = await graph.ainvoke(
-    {"messages": [("user", "Hello")]},
-    config={"configurable": {"thread_id": "thread-1"}}
+graph = (
+    StateGraph(State)
+    .add_node("classify", classify)
+    .add_node("weather", weather_node)
+    .add_node("general", general_node)
+    .add_edge(START, "classify")
+    # Conditional edge based on state
+    .add_conditional_edges(
+        "classify",
+        route_query,
+        ["weather", "general"]  # Possible destinations
+    )
+    .add_edge("weather", END)
+    .add_edge("general", END)
+    .compile()
 )
 
-# Async stream
-async for state in graph.astream(
-    {"messages": [("user", "Hello")]},
-    stream_mode="updates"
-):
-    print(state)
+result = graph.invoke({"query": "What's the weather?"})
 ```
 
-## Configuration Options
-
-### Thread ID (Required for Persistence)
+### Using Command for State + Routing
 
 ```python
-config = {"configurable": {"thread_id": "unique-thread-id"}}
-result = graph.invoke(input_data, config=config)
-```
+from langgraph.types import Command
+from typing import Literal
 
-### Recursion Limit
+class State(TypedDict):
+    count: int
+    result: str
 
-```python
-# Prevent infinite loops
-config = {"recursion_limit": 50}
-result = graph.invoke(input_data, config=config)
-```
-
-### Custom Configurable Values
-
-```python
-# Pass custom values to nodes via config
-config = {
-    "configurable": {
-        "thread_id": "thread-1",
-        "user_id": "user-123",
-        "model_name": "gpt-4",
-        "temperature": 0.7
-    }
-}
-
-# Access in nodes
-def my_node(state, config):
-    model_name = config["configurable"]["model_name"]
-    temperature = config["configurable"]["temperature"]
-    # Use these values...
-    return state
-```
-
-## State Management Methods
-
-### Get State
-
-```python
-# Get current state of a thread
-state = graph.get_state(
-    config={"configurable": {"thread_id": "thread-1"}}
-)
-print(state.values)  # Current state
-print(state.next)    # Next nodes to execute
-print(state.config)  # Config including checkpoint_id
-```
-
-### Update State
-
-```python
-# Update state manually
-graph.update_state(
-    config={"configurable": {"thread_id": "thread-1"}},
-    values={"messages": [("user", "New message")]}
-)
-
-# Update as a specific node
-graph.update_state(
-    config={"configurable": {"thread_id": "thread-1"}},
-    values={"counter": 5},
-    as_node="node_name"  # Updates are applied as if from this node
-)
-```
-
-### Get State History
-
-```python
-# Get all checkpoints for a thread
-history = graph.get_state_history(
-    config={"configurable": {"thread_id": "thread-1"}}
-)
-
-for state in history:
-    print(f"Checkpoint: {state.config['configurable']['checkpoint_id']}")
-    print(f"State: {state.values}")
-    print(f"Metadata: {state.metadata}")
-```
-
-## Complete Examples
-
-### Simple Chat Loop
-
-```python
-from langgraph.graph import StateGraph, MessagesState, START, END
-from langgraph.checkpoint.memory import MemorySaver
-
-def chatbot(state):
-    return {"messages": [("assistant", "Response to: " + state["messages"][-1][1])]}
-
-builder = StateGraph(MessagesState)
-builder.add_node("chatbot", chatbot)
-builder.add_edge(START, "chatbot")
-builder.add_edge("chatbot", END)
-
-graph = builder.compile(checkpointer=MemorySaver())
-
-# Chat loop
-thread_id = "user-123"
-while True:
-    user_input = input("You: ")
-    if user_input.lower() == "quit":
-        break
+def node_a(state: State) -> Command[Literal["node_b", "node_c"]]:
+    """Update state AND decide next node."""
+    new_count = state["count"] + 1
     
-    for state in graph.stream(
-        {"messages": [("user", user_input)]},
-        config={"configurable": {"thread_id": thread_id}},
-        stream_mode="updates"
-    ):
-        for node, output in state.items():
-            if "messages" in output:
-                print(f"Bot: {output['messages'][-1][1]}")
+    if new_count > 5:
+        # Go to node_c
+        return Command(
+            update={"count": new_count, "result": "Going to C"},
+            goto="node_c"
+        )
+    else:
+        # Go to node_b
+        return Command(
+            update={"count": new_count, "result": "Going to B"},
+            goto="node_b"
+        )
+
+def node_b(state: State) -> dict:
+    return {"result": f"B executed, count={state['count']}"}
+
+def node_c(state: State) -> dict:
+    return {"result": f"C executed, count={state['count']}"}
+
+graph = (
+    StateGraph(State)
+    .add_node("node_a", node_a)
+    .add_node("node_b", node_b)
+    .add_node("node_c", node_c)
+    .add_edge(START, "node_a")
+    .add_edge("node_b", END)
+    .add_edge("node_c", END)
+    .compile()
+)
+
+result = graph.invoke({"count": 0})
+print(result["result"])  # "B executed, count=1"
+
+result = graph.invoke({"count": 5})
+print(result["result"])  # "C executed, count=6"
 ```
 
-### Streaming LLM Tokens
+### Map-Reduce with Send API
 
 ```python
-config = {"configurable": {"thread_id": "thread-1"}}
+from langgraph.types import Send
+from typing import Annotated
+import operator
 
-for token, metadata in graph.stream(
-    {"messages": [("user", "Tell me a story")]},
-    config=config,
-    stream_mode="messages"
-):
-    print(token, end="", flush=True)
-print()  # New line at end
+class State(TypedDict):
+    items: list[str]
+    results: Annotated[list, operator.add]  # Accumulate results
+
+def fan_out(state: State):
+    """Send each item to a worker node."""
+    return [
+        Send("worker", {"item": item})
+        for item in state["items"]
+    ]
+
+def worker(state: dict) -> dict:
+    """Process a single item."""
+    item = state["item"]
+    return {"results": [f"Processed: {item}"]}
+
+def aggregate(state: State) -> dict:
+    """Combine results."""
+    return {"final": ", ".join(state["results"])}
+
+graph = (
+    StateGraph(State)
+    .add_node("worker", worker)
+    .add_node("aggregate", aggregate)
+    .add_conditional_edges(START, fan_out, ["worker"])
+    .add_edge("worker", "aggregate")
+    .add_edge("aggregate", END)
+    .compile()
+)
+
+result = graph.invoke({"items": ["A", "B", "C"]})
+print(result["final"])  # "Processed: A, Processed: B, Processed: C"
 ```
 
-## Graph Visualization
-
-### View Graph Structure
+### Graph with Loops
 
 ```python
-# Get Mermaid diagram
-from IPython.display import Image, display
+from langgraph.graph import StateGraph, START, END
 
-# Draw graph
-display(Image(graph.get_graph().draw_mermaid_png()))
+class State(TypedDict):
+    count: int
+    max_iterations: int
 
-# Or get as ASCII
-print(graph.get_graph().draw_ascii())
+def increment(state: State) -> dict:
+    return {"count": state["count"] + 1}
+
+def should_continue(state: State) -> str:
+    """Loop until max iterations reached."""
+    if state["count"] >= state["max_iterations"]:
+        return END
+    return "increment"
+
+graph = (
+    StateGraph(State)
+    .add_node("increment", increment)
+    .add_edge(START, "increment")
+    .add_conditional_edges("increment", should_continue)
+    .compile()
+)
+
+result = graph.invoke({"count": 0, "max_iterations": 5})
+print(result["count"])  # 5
 ```
 
-### Inspect Graph Components
+### Compiling with Options
 
 ```python
-# Get node information
-compiled_graph = graph.get_graph()
-print("Nodes:", compiled_graph.nodes)
-print("Edges:", compiled_graph.edges)
+from langgraph.checkpoint.memory import InMemorySaver
 
-# Get specific node
-node = compiled_graph.get_node("node_name")
+checkpointer = InMemorySaver()
+
+graph = (
+    StateGraph(State)
+    .add_node("node_a", node_a)
+    .add_edge(START, "node_a")
+    .add_edge("node_a", END)
+    .compile(
+        checkpointer=checkpointer,      # Enable persistence
+        interrupt_before=["node_a"],    # Breakpoint before node
+        interrupt_after=["node_a"],     # Breakpoint after node
+    )
+)
 ```
 
-## Decision Table: Invoke vs Stream
+## Boundaries
 
-| Use Case | Method | Why |
-|----------|--------|-----|
-| Get final result only | `invoke()` | Simpler, waits for completion |
-| Real-time updates | `stream()` | Progress visibility |
-| LLM token streaming | `stream(mode="messages")` | Show tokens as generated |
-| Debugging | `stream(mode="debug")` | See execution details |
-| UI progress bars | `stream(mode="updates")` | Track node completion |
-| Async operations | `ainvoke()` / `astream()` | Non-blocking execution |
+### What Agents CAN Configure
 
-## What You Can Do
+✅ Define custom nodes (any Python function)
+✅ Add static edges between nodes
+✅ Add conditional edges with custom logic
+✅ Use Command for combined state/routing
+✅ Create loops with conditional termination
+✅ Fan-out with Send API (map-reduce)
+✅ Set breakpoints (interrupt_before/after)
+✅ Customize state schema
+✅ Specify checkpointer for persistence
 
-✅ **Execute graphs** with invoke and stream  
-✅ **Stream real-time updates** during execution  
-✅ **Persist state** with thread_id configuration  
-✅ **Get and update state** programmatically  
-✅ **Access state history** for debugging  
-✅ **Visualize graphs** with Mermaid diagrams  
-✅ **Configure recursion limits** to prevent infinite loops  
-✅ **Use async methods** for concurrent execution  
+### What Agents CANNOT Configure
 
-## What You Cannot Do
+❌ Modify START/END node behavior
+❌ Change super-step execution model
+❌ Alter message-passing protocol
+❌ Override graph compilation logic
+❌ Bypass state update mechanism
 
-❌ **Invoke without compiling**: Must call `compile()` first  
-❌ **Modify graph after compilation**: Graph is immutable  
-❌ **Access intermediate state without streaming**: Use stream mode  
-❌ **Share state across different graphs**: Each graph is isolated  
-❌ **Resume without checkpointer**: Need checkpointer for persistence  
+## Gotchas
 
-## Common Gotchas
-
-### 1. **Not Compiling Before Invoke**
+### 1. Must Compile Before Execution
 
 ```python
-builder = StateGraph(State)
-# ... add nodes ...
+# ❌ WRONG
+builder = StateGraph(State).add_node("node", func)
+builder.invoke({"input": "test"})  # AttributeError!
 
-# ❌ Can't invoke builder
-result = builder.invoke(input)  # Error!
-
-# ✅ Compile first
+# ✅ CORRECT
 graph = builder.compile()
-result = graph.invoke(input)
+graph.invoke({"input": "test"})
 ```
 
-### 2. **Forgetting Config for Persistence**
+### 2. Conditional Edge Destinations Must Exist
 
 ```python
-# ❌ No thread_id - state not persisted
-graph.invoke({"messages": [("user", "Hi")]})
-graph.invoke({"messages": [("user", "Remember me?")]})  # Doesn't remember
+# ❌ WRONG - "missing_node" not added to graph
+def router(state):
+    return "missing_node"
 
-# ✅ With thread_id
-config = {"configurable": {"thread_id": "thread-1"}}
-graph.invoke({"messages": [("user", "Hi")]}, config=config)
-graph.invoke({"messages": [("user", "Remember me?")]}, config=config)  # Remembers!
+builder.add_conditional_edges("node_a", router, ["missing_node"])
+
+# ✅ CORRECT - Add all possible destinations
+builder.add_node("missing_node", func)
+builder.add_conditional_edges("node_a", router, ["missing_node"])
 ```
 
-### 3. **Wrong Stream Mode**
+### 3. Command Requires Type Annotation
 
 ```python
-# ❌ Using wrong mode for LLM tokens
-for state in graph.stream(input, stream_mode="values"):
-    print(state)  # Gets full state, not tokens
+# ❌ WRONG - No type hint for routing
+def node_a(state) -> Command:
+    return Command(goto="node_b")
 
-# ✅ Use messages mode for tokens
-for token, metadata in graph.stream(input, stream_mode="messages"):
-    print(token, end="", flush=True)
+# ✅ CORRECT - Specify possible destinations
+from typing import Literal
+
+def node_a(state) -> Command[Literal["node_b", "node_c"]]:
+    return Command(goto="node_b")
 ```
 
-### 4. **Not Awaiting Async Methods**
+### 4. Loops Need Exit Condition
 
 ```python
-# ❌ Forgot await
-result = graph.ainvoke(input)  # Returns coroutine, not result
+# ❌ WRONG - Infinite loop
+builder.add_edge("node_a", "node_b")
+builder.add_edge("node_b", "node_a")  # No way out!
 
-# ✅ Await async methods
-result = await graph.ainvoke(input)
+# ✅ CORRECT - Conditional edge to END
+def should_continue(state):
+    if state["count"] > 10:
+        return END
+    return "node_b"
+
+builder.add_conditional_edges("node_a", should_continue)
 ```
 
-### 5. **Exceeding Recursion Limit**
+### 5. Send API Requires Accumulator
 
 ```python
-# ❌ Infinite loop with default limit
-# Graph loops forever, hits limit
+# ❌ WRONG - Results will be overwritten
+class State(TypedDict):
+    results: list  # No reducer!
 
-# ✅ Set appropriate limit or fix loop
-config = {"recursion_limit": 100}
-result = graph.invoke(input, config=config)
+# ✅ CORRECT - Use Annotated with operator.add
+from typing import Annotated
+import operator
+
+class State(TypedDict):
+    results: Annotated[list, operator.add]  # Accumulates results
 ```
 
-## Related Documentation
+### 6. START is Virtual, Cannot Be a Destination
 
-- [LangGraph Overview](/langgraph-overview/) - Core concepts
-- [LangGraph Workflows](/langgraph-workflows/) - Building graphs
-- [LangGraph Persistence](/langgraph-persistence/) - Using checkpointers
-- [LangGraph Streaming](/langgraph-streaming/) - Stream modes in detail
-- [Official Docs - Graph API](https://python.langchain.com/docs/langgraph/concepts/graph_api)
+```python
+# ❌ WRONG - Cannot route back to START
+builder.add_edge("node_a", START)  # Error!
+
+# ✅ CORRECT - Use named entry node instead
+builder.add_node("entry", entry_func)
+builder.add_edge(START, "entry")
+builder.add_edge("node_a", "entry")  # OK
+```
+
+## Links
+
+- [Graph API Reference (Python)](https://docs.langchain.com/oss/python/langgraph/graph-api)
+- [Using the Graph API](https://docs.langchain.com/oss/python/langgraph/use-graph-api)
+- [Command Documentation](https://docs.langchain.com/oss/python/langgraph/use-graph-api#combine-control-flow-and-state-updates-with-command)
+- [Send API Guide](https://docs.langchain.com/oss/python/langgraph/use-graph-api#map-reduce-and-the-send-api)
+- [Conditional Branching](https://docs.langchain.com/oss/python/langgraph/use-graph-api#conditional-branching)

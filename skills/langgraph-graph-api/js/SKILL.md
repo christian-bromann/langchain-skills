@@ -1,444 +1,435 @@
 ---
 name: langgraph-graph-api
-description: Using the LangGraph Graph API: compiling graphs, invoke vs stream methods, configuration with thread_id, and graph visualization
+description: Building graphs with StateGraph, nodes, edges, START/END nodes, and the Command API for combining control flow with state updates
 language: js
 ---
 
 # langgraph-graph-api (JavaScript/TypeScript)
 
-# LangGraph Graph API
+---
+name: langgraph-graph-api
+description: Building graphs with StateGraph, nodes, edges, START/END nodes, and the Command API for combining control flow with state updates
+---
 
 ## Overview
 
-The Graph API is how you execute compiled LangGraph workflows. After building and compiling a graph, you use methods like `invoke()`, `stream()`, and `batch()` to run it with different execution patterns.
+The LangGraph Graph API allows you to define agent workflows as directed graphs composed of **nodes** (functions) and **edges** (control flow). This provides fine-grained control over agent orchestration.
 
-## Graph Compilation
+**Core Components:**
+- **StateGraph**: Main class for building stateful graphs
+- **Nodes**: Functions that perform work and update state
+- **Edges**: Define execution order (static or conditional)
+- **START/END**: Special nodes marking graph entry and exit points
+- **Command**: Combine state updates with dynamic routing
 
-Before using a graph, you must compile it from a builder.
+## Decision Table: Edge Types
+
+| Need | Edge Type | When to Use |
+|------|-----------|-------------|
+| Always go to same node | `addEdge()` | Fixed, deterministic flow |
+| Route based on state | `addConditionalEdges()` | Dynamic branching logic |
+| Fan-out to multiple nodes | `Send` API | Map-reduce, parallel execution |
+| Update state AND route | `Command` | Combine logic in single node |
+
+## Key Concepts
+
+### 1. Graph Execution Model
+
+LangGraph uses a **message-passing** model inspired by Google's Pregel:
+- Execution proceeds in **super-steps** (discrete iterations)
+- Nodes in parallel are part of the same super-step
+- Sequential nodes belong to separate super-steps
+- Graph ends when all nodes are inactive and no messages in transit
+
+### 2. Nodes
+
+**Nodes** are async functions that:
+- Receive the current state as input
+- Perform computation or side effects
+- Return state updates (partial or full)
 
 ```typescript
-import { StateGraph, START, END, MessagesAnnotation } from "@langchain/langgraph";
+const myNode = async (state: State): Promise<Partial<State>> => {
+  // Nodes are just async functions!
+  return { key: "updated_value" };
+};
+```
+
+### 3. Edges
+
+| Edge Type | Description | Example |
+|-----------|-------------|---------|
+| **Static** | Always routes to same node | `addEdge("A", "B")` |
+| **Conditional** | Routes based on state/logic | `addConditionalEdges("A", router)` |
+| **Dynamic (Send)** | Fan-out to multiple nodes | `new Send("worker", {...})` |
+| **Command** | State update + routing | `new Command({ goto: "B" })` |
+
+### 4. Special Nodes
+
+- **START**: Entry point of the graph (virtual node)
+- **END**: Terminal node (graph halts)
+
+## Code Examples
+
+### Basic Graph with Static Edges
+
+```typescript
+import { StateGraph, StateSchema, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+// 1. Define state
+const State = new StateSchema({
+  input: z.string(),
+  output: z.string(),
+});
+
+// 2. Define nodes
+const processInput = async (state: typeof State.State) => {
+  return { output: `Processed: ${state.input}` };
+};
+
+const finalize = async (state: typeof State.State) => {
+  return { output: state.output.toUpperCase() };
+};
+
+// 3. Build graph
+const graph = new StateGraph(State)
+  .addNode("process", processInput)
+  .addNode("finalize", finalize)
+  .addEdge(START, "process")       // Entry point
+  .addEdge("process", "finalize")  // Static edge
+  .addEdge("finalize", END)        // Exit point
+  .compile();
+
+// 4. Execute
+const result = await graph.invoke({ input: "hello" });
+console.log(result.output);  // "PROCESSED: HELLO"
+```
+
+### Conditional Edges (Branching)
+
+```typescript
+import { StateGraph, StateSchema, ConditionalEdgeRouter, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const State = new StateSchema({
+  query: z.string(),
+  route: z.string(),
+  result: z.string().optional(),
+});
+
+const classify = async (state: typeof State.State) => {
+  if (state.query.toLowerCase().includes("weather")) {
+    return { route: "weather" };
+  }
+  return { route: "general" };
+};
+
+const weatherNode = async (state: typeof State.State) => {
+  return { result: "Sunny, 72°F" };
+};
+
+const generalNode = async (state: typeof State.State) => {
+  return { result: "General response" };
+};
+
+// Router function
+const routeQuery: ConditionalEdgeRouter<typeof State, "weather" | "general"> = (state) => {
+  return state.route as "weather" | "general";
+};
+
+const graph = new StateGraph(State)
+  .addNode("classify", classify)
+  .addNode("weather", weatherNode)
+  .addNode("general", generalNode)
+  .addEdge(START, "classify")
+  // Conditional edge based on state
+  .addConditionalEdges(
+    "classify",
+    routeQuery,
+    ["weather", "general"]  // Possible destinations
+  )
+  .addEdge("weather", END)
+  .addEdge("general", END)
+  .compile();
+
+const result = await graph.invoke({ query: "What's the weather?" });
+```
+
+### Using Command for State + Routing
+
+```typescript
+import { StateGraph, StateSchema, Command, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const State = new StateSchema({
+  count: z.number(),
+  result: z.string(),
+});
+
+const nodeA = async (state: typeof State.State) => {
+  const newCount = state.count + 1;
+  
+  if (newCount > 5) {
+    // Go to nodeC
+    return new Command({
+      update: { count: newCount, result: "Going to C" },
+      goto: "nodeC"
+    });
+  } else {
+    // Go to nodeB
+    return new Command({
+      update: { count: newCount, result: "Going to B" },
+      goto: "nodeB"
+    });
+  }
+};
+
+const nodeB = async (state: typeof State.State) => {
+  return { result: `B executed, count=${state.count}` };
+};
+
+const nodeC = async (state: typeof State.State) => {
+  return { result: `C executed, count=${state.count}` };
+};
+
+const graph = new StateGraph(State)
+  .addNode("nodeA", nodeA, { ends: ["nodeB", "nodeC"] })  // Specify possible routes
+  .addNode("nodeB", nodeB)
+  .addNode("nodeC", nodeC)
+  .addEdge(START, "nodeA")
+  .addEdge("nodeB", END)
+  .addEdge("nodeC", END)
+  .compile();
+
+const result1 = await graph.invoke({ count: 0 });
+console.log(result1.result);  // "B executed, count=1"
+
+const result2 = await graph.invoke({ count: 5 });
+console.log(result2.result);  // "C executed, count=6"
+```
+
+### Map-Reduce with Send API
+
+```typescript
+import { StateGraph, StateSchema, Send, ReducedValue, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const State = new StateSchema({
+  items: z.array(z.string()),
+  results: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
+  final: z.string().optional(),
+});
+
+const fanOut = (state: typeof State.State) => {
+  // Send each item to a worker node
+  return state.items.map(item => 
+    new Send("worker", { item })
+  );
+};
+
+const worker = async (state: { item: string }) => {
+  // Process a single item
+  return { results: [`Processed: ${state.item}`] };
+};
+
+const aggregate = async (state: typeof State.State) => {
+  // Combine results
+  return { final: state.results.join(", ") };
+};
+
+const graph = new StateGraph(State)
+  .addNode("worker", worker)
+  .addNode("aggregate", aggregate)
+  .addConditionalEdges(START, fanOut, ["worker"])
+  .addEdge("worker", "aggregate")
+  .addEdge("aggregate", END)
+  .compile();
+
+const result = await graph.invoke({ items: ["A", "B", "C"] });
+console.log(result.final);  // "Processed: A, Processed: B, Processed: C"
+```
+
+### Graph with Loops
+
+```typescript
+import { StateGraph, StateSchema, ConditionalEdgeRouter, START, END } from "@langchain/langgraph";
+import { z } from "zod";
+
+const State = new StateSchema({
+  count: z.number(),
+  maxIterations: z.number(),
+});
+
+const increment = async (state: typeof State.State) => {
+  return { count: state.count + 1 };
+};
+
+const shouldContinue: ConditionalEdgeRouter<typeof State, "increment"> = (state) => {
+  if (state.count >= state.maxIterations) {
+    return END;
+  }
+  return "increment";
+};
+
+const graph = new StateGraph(State)
+  .addNode("increment", increment)
+  .addEdge(START, "increment")
+  .addConditionalEdges("increment", shouldContinue, ["increment", END])
+  .compile();
+
+const result = await graph.invoke({ count: 0, maxIterations: 5 });
+console.log(result.count);  // 5
+```
+
+### Compiling with Options
+
+```typescript
 import { MemorySaver } from "@langchain/langgraph";
 
-// Build graph
-const builder = new StateGraph(MessagesAnnotation)
-  .addNode("chatbot", chatbotNode)
-  .addEdge(START, "chatbot")
-  .addEdge("chatbot", END);
+const checkpointer = new MemorySaver();
 
-// Compile (with optional checkpointer)
-const graph = builder.compile({ checkpointer: new MemorySaver() });
+const graph = new StateGraph(State)
+  .addNode("nodeA", nodeA)
+  .addEdge(START, "nodeA")
+  .addEdge("nodeA", END)
+  .compile({
+    checkpointer,                    // Enable persistence
+    interruptBefore: ["nodeA"],      // Breakpoint before node
+    interruptAfter: ["nodeA"],       // Breakpoint after node
+  });
 ```
 
-### Compilation Options
+## Boundaries
+
+### What Agents CAN Configure
+
+✅ Define custom nodes (any async function)
+✅ Add static edges between nodes
+✅ Add conditional edges with custom logic
+✅ Use Command for combined state/routing
+✅ Create loops with conditional termination
+✅ Fan-out with Send API (map-reduce)
+✅ Set breakpoints (interruptBefore/After)
+✅ Customize state schema
+✅ Specify checkpointer for persistence
+
+### What Agents CANNOT Configure
+
+❌ Modify START/END node behavior
+❌ Change super-step execution model
+❌ Alter message-passing protocol
+❌ Override graph compilation logic
+❌ Bypass state update mechanism
+
+## Gotchas
+
+### 1. Must Compile Before Execution
 
 ```typescript
-// No persistence
+// ❌ WRONG
+const builder = new StateGraph(State).addNode("node", func);
+await builder.invoke({ input: "test" });  // Error!
+
+// ✅ CORRECT
 const graph = builder.compile();
-
-// With checkpointer for persistence
-import { MemorySaver } from "@langchain/langgraph";
-const graph = builder.compile({ checkpointer: new MemorySaver() });
-
-// With memory store
-import { InMemoryStore } from "@langchain/langgraph";
-const graph = builder.compile({
-  checkpointer: new MemorySaver(),
-  store: new InMemoryStore(),
-});
-
-// With interrupts (human-in-the-loop)
-const graph = builder.compile({
-  checkpointer: new MemorySaver(),
-  interruptBefore: ["approvalNode"],
-  interruptAfter: ["sensitiveAction"],
-});
+await graph.invoke({ input: "test" });
 ```
 
-## Invoke: Single Execution
-
-`invoke()` runs the graph once and returns the final state.
-
-### Basic Invoke
+### 2. Conditional Edge Destinations Must Exist
 
 ```typescript
-// Simple invocation
-const result = await graph.invoke({
-  messages: [{ role: "user", content: "Hello" }],
-});
-console.log(result);
-// { messages: [{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi there!' }] }
+// ❌ WRONG - "missingNode" not added to graph
+const router = (state) => "missingNode";
+
+builder.addConditionalEdges("nodeA", router, ["missingNode"]);
+
+// ✅ CORRECT - Add all possible destinations
+builder.addNode("missingNode", func);
+builder.addConditionalEdges("nodeA", router, ["missingNode"]);
 ```
 
-### Invoke with Config
+### 3. Command Requires `ends` Parameter
 
 ```typescript
-// With thread_id for persistence
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Hello" }] },
-  { configurable: { thread_id: "conversation-1" } }
-);
-
-// With custom configuration
-const result = await graph.invoke(
-  { messages: [{ role: "user", content: "Hello" }] },
-  {
-    configurable: {
-      thread_id: "thread-123",
-      user_id: "user-456",
-    },
-    recursionLimit: 100,
-    tags: ["production", "chatbot"],
-  }
-);
-```
-
-## Stream: Incremental Updates
-
-`stream()` yields state updates as the graph executes, enabling real-time progress.
-
-### Basic Streaming
-
-```typescript
-// Stream with default mode ("values")
-for await (const state of await graph.stream({
-  messages: [{ role: "user", content: "Hello" }],
-})) {
-  console.log(state);
-}
-// First iteration: partial state
-// Second iteration: more updates
-// Final iteration: complete state
-```
-
-### Stream Modes
-
-```typescript
-// Mode: "values" - Full state after each step
-for await (const state of await graph.stream(input, { streamMode: "values" })) {
-  console.log("Full state:", state);
-}
-
-// Mode: "updates" - Only the updates from each node
-for await (const update of await graph.stream(input, { streamMode: "updates" })) {
-  console.log("Update:", update);
-}
-
-// Mode: "messages" - LLM token streaming
-for await (const [token, metadata] of await graph.stream(input, { streamMode: "messages" })) {
-  process.stdout.write(token);
-}
-
-// Mode: "debug" - Detailed execution info
-for await (const event of await graph.stream(input, { streamMode: "debug" })) {
-  console.log("Debug:", event);
-}
-
-// Multiple modes
-for await (const event of await graph.stream(input, {
-  streamMode: ["values", "updates"],
-})) {
-  console.log(event);
-}
-```
-
-### Stream with Config
-
-```typescript
-const config = { configurable: { thread_id: "thread-1" } };
-
-for await (const state of await graph.stream(
-  { messages: [{ role: "user", content: "Hello" }] },
-  { ...config, streamMode: "updates" }
-)) {
-  const nodeName = Object.keys(state)[0];
-  console.log(`Node: ${nodeName}`);
-  console.log(`Output:`, state);
-}
-```
-
-## Configuration Options
-
-### Thread ID (Required for Persistence)
-
-```typescript
-const config = { configurable: { thread_id: "unique-thread-id" } };
-const result = await graph.invoke(inputData, config);
-```
-
-### Recursion Limit
-
-```typescript
-// Prevent infinite loops
-const config = { recursionLimit: 50 };
-const result = await graph.invoke(inputData, config);
-```
-
-### Custom Configurable Values
-
-```typescript
-// Pass custom values to nodes via config
-const config = {
-  configurable: {
-    thread_id: "thread-1",
-    user_id: "user-123",
-    model_name: "gpt-4",
-    temperature: 0.7,
-  },
+// ❌ WRONG - No ends specified
+const nodeA = async (state) => {
+  return new Command({ goto: "nodeB" });
 };
 
-// Access in nodes
-const myNode = (state: typeof State.State, config: RunnableConfig) => {
-  const modelName = config.configurable?.model_name;
-  const temperature = config.configurable?.temperature;
-  // Use these values...
-  return state;
-};
+builder.addNode("nodeA", nodeA);  // Error when using Command!
+
+// ✅ CORRECT - Specify possible destinations
+builder.addNode("nodeA", nodeA, { ends: ["nodeB", "nodeC"] });
 ```
 
-## State Management Methods
-
-### Get State
+### 4. Loops Need Exit Condition
 
 ```typescript
-// Get current state of a thread
-const state = await graph.getState({
-  configurable: { thread_id: "thread-1" },
-});
-console.log(state.values);  // Current state
-console.log(state.next);    // Next nodes to execute
-console.log(state.config);  // Config including checkpoint_id
-```
+// ❌ WRONG - Infinite loop
+builder
+  .addEdge("nodeA", "nodeB")
+  .addEdge("nodeB", "nodeA");  // No way out!
 
-### Update State
-
-```typescript
-// Update state manually
-await graph.updateState(
-  { configurable: { thread_id: "thread-1" } },
-  { messages: [{ role: "user", content: "New message" }] }
-);
-
-// Update as a specific node
-await graph.updateState(
-  { configurable: { thread_id: "thread-1" } },
-  { counter: 5 },
-  "nodeName"  // Updates are applied as if from this node
-);
-```
-
-### Get State History
-
-```typescript
-// Get all checkpoints for a thread
-const history = await graph.getStateHistory({
-  configurable: { thread_id: "thread-1" },
-});
-
-for await (const state of history) {
-  console.log(`Checkpoint: ${state.config.configurable.checkpoint_id}`);
-  console.log(`State:`, state.values);
-  console.log(`Metadata:`, state.metadata);
-}
-```
-
-## Complete Examples
-
-### Simple Chat Loop
-
-```typescript
-import { StateGraph, MessagesAnnotation, START, END, MemorySaver } from "@langchain/langgraph";
-import * as readline from "readline";
-
-const chatbot = (state: typeof MessagesAnnotation.State) => {
-  const lastMessage = state.messages[state.messages.length - 1];
-  return {
-    messages: [{
-      role: "assistant",
-      content: `Response to: ${lastMessage.content}`,
-    }],
-  };
+// ✅ CORRECT - Conditional edge to END
+const shouldContinue = (state) => {
+  if (state.count > 10) return END;
+  return "nodeB";
 };
 
-const builder = new StateGraph(MessagesAnnotation)
-  .addNode("chatbot", chatbot)
-  .addEdge(START, "chatbot")
-  .addEdge("chatbot", END);
+builder.addConditionalEdges("nodeA", shouldContinue, ["nodeB", END]);
+```
 
-const graph = builder.compile({ checkpointer: new MemorySaver() });
+### 5. Send API Requires Reducer
 
-// Chat loop
-const threadId = "user-123";
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
+```typescript
+// ❌ WRONG - Results will be overwritten
+const State = new StateSchema({
+  results: z.array(z.string()),  // No reducer!
 });
 
-rl.on("line", async (userInput) => {
-  if (userInput.toLowerCase() === "quit") {
-    rl.close();
-    return;
-  }
-  
-  for await (const state of await graph.stream(
-    { messages: [{ role: "user", content: userInput }] },
-    {
-      configurable: { thread_id: threadId },
-      streamMode: "updates",
-    }
-  )) {
-    for (const [node, output] of Object.entries(state)) {
-      if (output.messages) {
-        const lastMsg = output.messages[output.messages.length - 1];
-        console.log(`Bot: ${lastMsg.content}`);
-      }
-    }
-  }
-  
-  process.stdout.write("You: ");
+// ✅ CORRECT - Use ReducedValue
+import { ReducedValue } from "@langchain/langgraph";
+
+const State = new StateSchema({
+  results: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    { reducer: (current, update) => current.concat(update) }
+  ),
 });
-
-console.log("Chat started. Type 'quit' to exit.");
-process.stdout.write("You: ");
 ```
 
-### Streaming LLM Tokens
+### 6. START is Virtual, Cannot Be a Destination
 
 ```typescript
-const config = { configurable: { thread_id: "thread-1" } };
+// ❌ WRONG - Cannot route back to START
+builder.addEdge("nodeA", START);  // Error!
 
-for await (const [token, metadata] of await graph.stream(
-  { messages: [{ role: "user", content: "Tell me a story" }] },
-  { ...config, streamMode: "messages" }
-)) {
-  process.stdout.write(token);
-}
-console.log();  // New line at end
+// ✅ CORRECT - Use named entry node instead
+builder.addNode("entry", entryFunc);
+builder.addEdge(START, "entry");
+builder.addEdge("nodeA", "entry");  // OK
 ```
 
-## Graph Visualization
-
-### View Graph Structure
+### 7. Always Use Await
 
 ```typescript
-// Get Mermaid diagram
-const mermaidPng = await graph.getGraph().drawMermaidPng();
+// ❌ WRONG - Forgetting await
+const result = graph.invoke({ input: "test" });
+console.log(result.output);  // undefined (Promise!)
 
-// Or get as string
-const mermaidString = graph.getGraph().drawMermaid();
-console.log(mermaidString);
+// ✅ CORRECT
+const result = await graph.invoke({ input: "test" });
+console.log(result.output);  // Works!
 ```
 
-### Inspect Graph Components
+## Links
 
-```typescript
-// Get node information
-const compiledGraph = graph.getGraph();
-console.log("Nodes:", compiledGraph.nodes);
-console.log("Edges:", compiledGraph.edges);
-
-// Get specific node
-const node = compiledGraph.getNode("nodeName");
-```
-
-## Decision Table: Invoke vs Stream
-
-| Use Case | Method | Why |
-|----------|--------|-----|
-| Get final result only | `invoke()` | Simpler, waits for completion |
-| Real-time updates | `stream()` | Progress visibility |
-| LLM token streaming | `stream({ streamMode: "messages" })` | Show tokens as generated |
-| Debugging | `stream({ streamMode: "debug" })` | See execution details |
-| UI progress bars | `stream({ streamMode: "updates" })` | Track node completion |
-| All async operations | `await invoke()` / `await stream()` | Non-blocking execution |
-
-## What You Can Do
-
-✅ **Execute graphs** with invoke and stream  
-✅ **Stream real-time updates** during execution  
-✅ **Persist state** with thread_id configuration  
-✅ **Get and update state** programmatically  
-✅ **Access state history** for debugging  
-✅ **Visualize graphs** with Mermaid diagrams  
-✅ **Configure recursion limits** to prevent infinite loops  
-✅ **Handle async operations** with await  
-
-## What You Cannot Do
-
-❌ **Invoke without compiling**: Must call `compile()` first  
-❌ **Modify graph after compilation**: Graph is immutable  
-❌ **Access intermediate state without streaming**: Use stream mode  
-❌ **Share state across different graphs**: Each graph is isolated  
-❌ **Resume without checkpointer**: Need checkpointer for persistence  
-
-## Common Gotchas
-
-### 1. **Not Compiling Before Invoke**
-
-```typescript
-const builder = new StateGraph(State);
-// ... add nodes ...
-
-// ❌ Can't invoke builder
-const result = await builder.invoke(input);  // Error!
-
-// ✅ Compile first
-const graph = builder.compile();
-const result = await graph.invoke(input);
-```
-
-### 2. **Forgetting Config for Persistence**
-
-```typescript
-// ❌ No thread_id - state not persisted
-await graph.invoke({ messages: [{ role: "user", content: "Hi" }] });
-await graph.invoke({ messages: [{ role: "user", content: "Remember me?" }] });
-
-// ✅ With thread_id
-const config = { configurable: { thread_id: "thread-1" } };
-await graph.invoke({ messages: [{ role: "user", content: "Hi" }] }, config);
-await graph.invoke({ messages: [{ role: "user", content: "Remember me?" }] }, config);
-```
-
-### 3. **Wrong Stream Mode**
-
-```typescript
-// ❌ Using wrong mode for LLM tokens
-for await (const state of await graph.stream(input, { streamMode: "values" })) {
-  console.log(state);  // Gets full state, not tokens
-}
-
-// ✅ Use messages mode for tokens
-for await (const [token, _] of await graph.stream(input, { streamMode: "messages" })) {
-  process.stdout.write(token);
-}
-```
-
-### 4. **Not Awaiting Async Methods**
-
-```typescript
-// ❌ Forgot await
-const result = graph.invoke(input);  // Returns Promise, not result
-
-// ✅ Await async methods
-const result = await graph.invoke(input);
-```
-
-### 5. **Exceeding Recursion Limit**
-
-```typescript
-// ❌ Infinite loop with default limit
-// Graph loops forever, hits limit
-
-// ✅ Set appropriate limit or fix loop
-const config = { recursionLimit: 100 };
-const result = await graph.invoke(input, config);
-```
-
-## Related Documentation
-
-- [LangGraph Overview](/langgraph-overview/) - Core concepts
-- [LangGraph Workflows](/langgraph-workflows/) - Building graphs
-- [LangGraph Persistence](/langgraph-persistence/) - Using checkpointers
-- [LangGraph Streaming](/langgraph-streaming/) - Stream modes in detail
-- [Official Docs - Graph API](https://js.langchain.com/docs/langgraph/concepts/graph_api)
+- [Graph API Reference (JavaScript)](https://docs.langchain.com/oss/javascript/langgraph/graph-api)
+- [Using the Graph API](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api)
+- [Command Documentation](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api#combine-control-flow-and-state-updates-with-command)
+- [Send API Guide](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api#map-reduce-and-the-send-api)
+- [Conditional Branching](https://docs.langchain.com/oss/javascript/langgraph/use-graph-api#create-and-control-loops)

@@ -1,118 +1,144 @@
 ---
 name: langchain-human-in-the-loop
-description: Implement human-in-the-loop workflows with interrupts, approvals, Command for resuming, and HITL middleware patterns for Python.
+description: Add human oversight to LangChain agents using HITL middleware - includes interrupts, approval workflows, edit/reject decisions, and checkpoints
 language: python
 ---
 
 # langchain-human-in-the-loop (Python)
 
----
-name: langchain-human-in-the-loop
-description: Implement human-in-the-loop workflows with interrupts, approvals, Command for resuming, and HITL middleware patterns for Python.
-language: python
----
-
-# LangChain Human-in-the-Loop (Python)
-
 ## Overview
 
-Human-in-the-Loop (HITL) adds human oversight to agent actions, pausing execution to collect approval, edits, or rejections before continuing. This is essential for sensitive operations like data deletion, financial transactions, or external API calls.
+Human-in-the-Loop (HITL) lets you add human oversight to agent tool calls. When agents propose sensitive actions (like database writes or sending emails), execution pauses for human approval, editing, or rejection.
 
-**Key concepts:**
-- **Interrupts**: Pause agent execution and wait for human input
-- **Checkpointer**: Required for state persistence across pause/resume
-- **Command**: Resume execution with human decisions
-- **Thread ID**: Identifies the conversation/session to resume
-
-## Decision Tables
-
-### When to use HITL
-
-| Operation | Use HITL | Skip HITL |
-|-----------|----------|-----------|
-| Delete data | ✅ Critical | ❌ Too risky |
-| Send emails | ✅ Recommended | ⚠️ Spam risk |
-| Read-only queries | ❌ Unnecessary | ✅ Safe |
-| Financial transactions | ✅ Required | ❌ Too risky |
-| API calls | ⚠️ Context-dependent | ✅ For testing |
-
-### Decision types
-
-| Decision | Effect | Use When |
-|----------|--------|----------|
-| `approve` | Execute as-is | Tool call looks good |
-| `edit` | Modify then execute | Need to change parameters |
-| `reject` | Skip with feedback | Tool call is wrong |
+**Key Concepts:**
+- **human_in_the_loop_middleware**: Pauses execution for human decisions
+- **Interrupts**: Checkpoint where agent waits for human input
+- **Decisions**: approve, edit, or reject tool calls
+- **Checkpointer**: Required for persistence across interruptions
 
 ## Code Examples
 
 ### Basic HITL Setup
 
 ```python
-from langchain.agents import create_agent, hitl_middleware
+from langchain.agents import create_agent, human_in_the_loop_middleware
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
+from langchain.tools import tool
+
+@tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email."""
+    # Send email logic
+    return f"Email sent to {to}"
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[delete_records_tool, send_email_tool],
+    model="gpt-4.1",
+    tools=[send_email],
+    checkpointer=MemorySaver(),  # Required for HITL
     middleware=[
-        hitl_middleware(
-            interrupt_on=["delete_records", "send_email"]  # Tools requiring approval
+        human_in_the_loop_middleware(
+            interrupt_on={
+                "send_email": {
+                    "allowed_decisions": ["approve", "edit", "reject"],
+                },
+            }
         )
     ],
-    checkpointer=MemorySaver()  # Required for persistence
 )
+```
 
-config = {"configurable": {"thread_id": "conversation-1"}}
+### Running with Interrupts
 
-# Run until interrupt
-result = agent.invoke(
-    {
-        "messages": [
-            {"role": "user", "content": "Delete old records from the database"}
-        ]
-    },
+```python
+from langgraph.types import Command
+
+config = {"configurable": {"thread_id": "session-1"}}
+
+# Step 1: Agent runs until it needs to call tool
+result1 = agent.invoke({
+    "messages": [{"role": "user", "content": "Send email to john@example.com saying hello"}]
+}, config=config)
+
+# Check for interrupt
+if "__interrupt__" in result1:
+    interrupt = result1["__interrupt__"][0]
+    print(f"Waiting for approval: {interrupt.value}")
+
+# Step 2: Human approves
+result2 = agent.invoke(
+    Command(resume={"decisions": [{"type": "approve"}]}),
     config=config
 )
 
-# Check for interrupt
-if "__interrupt__" in result:
-    print("Interrupt detected:")
-    print(result["__interrupt__"][0].value)
-    
-    # Get human decision...
-    approved = input("Approve this action? (y/n): ") == "y"
-    
-    # Resume with decision
-    agent.invoke(
-        Command(
-            resume={"decisions": [{"type": "approve" if approved else "reject"}]}
-        ),
-        config=config  # Same thread ID!
-    )
+# Tool now executes and agent completes
+print(result2["messages"][-1].content)
+```
+
+### Editing Tool Arguments
+
+```python
+# Human edits the arguments
+result2 = agent.invoke(
+    Command(resume={
+        "decisions": [{
+            "type": "edit",
+            "args": {
+                "to": "alice@company.com",  # Fixed email
+                "subject": "Project Meeting - Updated",
+                "body": "...",
+            },
+        }]
+    }),
+    config=config
+)
+```
+
+### Rejecting with Feedback
+
+```python
+# Human rejects
+result2 = agent.invoke(
+    Command(resume={
+        "decisions": [{
+            "type": "reject",
+            "feedback": "Cannot delete customer data without manager approval",
+        }]
+    }),
+    config=config
+)
+```
+
+### Multiple Tools with Different Policies
+
+```python
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[send_email, read_email, delete_email],
+    checkpointer=MemorySaver(),
+    middleware=[
+        human_in_the_loop_middleware(
+            interrupt_on={
+                "send_email": {
+                    "allowed_decisions": ["approve", "edit", "reject"],
+                },
+                "delete_email": {
+                    "allowed_decisions": ["approve", "reject"],  # No edit
+                },
+                "read_email": False,  # No HITL for reading
+            }
+        )
+    ],
+)
 ```
 
 ### Streaming with HITL
 
 ```python
-from langchain.agents import create_agent, hitl_middleware
-from langgraph.types import Command
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[risky_tool],
-    middleware=[hitl_middleware(interrupt_on=["risky_tool"])],
-    checkpointer=MemorySaver()
-)
-
-config = {"configurable": {"thread_id": "thread-1"}}
-
 # Stream until interrupt
 for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Run risky operation"}]},
+    {"messages": [{"role": "user", "content": "Send report to team"}]},
     config=config,
-    stream_mode=["updates", "messages"]
+    stream_mode=["updates", "messages"],
 ):
     if mode == "messages":
         token, metadata = chunk
@@ -120,284 +146,68 @@ for mode, chunk in agent.stream(
             print(token.content, end="", flush=True)
     elif mode == "updates":
         if "__interrupt__" in chunk:
-            print("\n\nInterrupt detected!")
-            print(chunk["__interrupt__"])
-            break  # Stop streaming
+            print("\nWaiting for approval...")
+            break
 
-# Resume after human review
+# Resume after approval
 for mode, chunk in agent.stream(
     Command(resume={"decisions": [{"type": "approve"}]}),
     config=config,
-    stream_mode=["updates", "messages"]
+    stream_mode=["messages"],
 ):
-    # Continue processing...
+    # Continue streaming
     pass
 ```
 
-### Edit Tool Call Before Execution
-
-```python
-from langgraph.types import Command
-
-# After detecting interrupt
-interrupt_data = result["__interrupt__"][0].value
-tool_call = interrupt_data["action_requests"][0]
-
-print(f"Tool: {tool_call['name']}")
-print(f"Args: {tool_call['arguments']}")
-
-# Human edits the arguments
-edited_args = {
-    **tool_call["arguments"],
-    "limit": 10  # Changed from original value
-}
-
-# Resume with edited tool call
-agent.invoke(
-    Command(
-        resume={
-            "decisions": [
-                {
-                    "type": "edit",
-                    "tool_call": {
-                        "name": tool_call["name"],
-                        "arguments": edited_args
-                    }
-                }
-            ]
-        }
-    ),
-    config=config
-)
-```
-
-### Reject with Custom Message
-
-```python
-from langgraph.types import Command
-
-# After reviewing the tool call
-agent.invoke(
-    Command(
-        resume={
-            "decisions": [
-                {
-                    "type": "reject",
-                    "message": "Cannot delete records without backup. Please create a backup first."
-                }
-            ]
-        }
-    ),
-    config=config
-)
-
-# Agent receives the rejection message and can adjust
-```
-
-### Multiple Tools with Selective HITL
-
-```python
-from langchain.agents import create_agent, hitl_middleware
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[
-        search_tool,       # Safe, no approval needed
-        read_file_tool,    # Safe, no approval needed
-        write_file_tool,   # Requires approval
-        delete_file_tool   # Requires approval
-    ],
-    middleware=[
-        hitl_middleware(
-            interrupt_on=["write_file", "delete_file"]  # Only these need approval
-        )
-    ],
-    checkpointer=MemorySaver()
-)
-```
-
-### Custom Interrupt Logic
-
-```python
-from langgraph.config import interrupt
-from langchain.tools import tool
-
-@tool
-def transfer_money(amount: float) -> str:
-    """Transfer money between accounts."""
-    # Custom interrupt logic
-    if amount > 1000:
-        # Interrupt for large amounts
-        approval = interrupt({
-            "message": f"Large transaction: ${amount}. Approve?",
-            "amount": amount
-        })
-        
-        if not approval:
-            return "Transaction cancelled by user"
-    
-    # Proceed with transaction
-    return f"Transferred ${amount}"
-```
-
-### Check Interrupt Status
-
-```python
-# After invoking the agent
-result = agent.invoke({"messages": [...]}, config=config)
-
-if "__interrupt__" in result:
-    print("Agent paused for review")
-    print("Action requests:", result["__interrupt__"][0].value["action_requests"])
-    print("Review configs:", result["__interrupt__"][0].value["review_configs"])
-else:
-    print("Agent completed without interrupts")
-    print("Final response:", result["messages"][-1])
-```
-
-### Async HITL
-
-```python
-from langchain.agents import create_agent, hitl_middleware
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[async_tool],
-    middleware=[hitl_middleware(interrupt_on=["async_tool"])],
-    checkpointer=MemorySaver()
-)
-
-config = {"configurable": {"thread_id": "async-thread"}}
-
-# Async invoke
-result = await agent.ainvoke(
-    {"messages": [{"role": "user", "content": "Run async operation"}]},
-    config=config
-)
-
-# Check and resume
-if "__interrupt__" in result:
-    await agent.ainvoke(
-        Command(resume={"decisions": [{"type": "approve"}]}),
-        config=config
-    )
-```
-
-## Boundaries
-
-### ✅ What HITL CAN Do
-
-- **Pause execution**: Wait for human input before continuing
-- **Review tool calls**: See what the agent wants to do
-- **Approve actions**: Let agent proceed as planned
-- **Edit actions**: Modify tool parameters before execution
-- **Reject actions**: Stop tool execution with feedback
-- **Stream until interrupt**: Show progress then pause
-- **Multiple interrupts**: Handle several approvals in one flow
-- **Async support**: Full async/await compatibility
-
-### ❌ What HITL CANNOT Do
-
-- **Work without checkpointer**: State must persist across pause/resume
-- **Work without thread ID**: Need identifier to resume correct session
-- **Undo executed tools**: Can only prevent, not reverse
-- **Time travel**: Can't go back to earlier states
-- **Auto-expire**: Interrupts wait indefinitely
-
 ## Gotchas
 
-### 1. **Checkpointer is Required**
+### 1. Missing Checkpointer
 
 ```python
-# ❌ No checkpointer = state is lost
+# ❌ Problem: No checkpointer
 agent = create_agent(
-    model="gpt-4o",
-    tools=[dangerous_tool],
-    middleware=[hitl_middleware(interrupt_on=["dangerous_tool"])],
-    # Missing checkpointer!
+    model="gpt-4.1",
+    tools=[send_email],
+    middleware=[human_in_the_loop_middleware({...})],  # Error!
 )
 
-# ✅ Always include checkpointer for HITL
+# ✅ Solution: Always add checkpointer
+from langgraph.checkpoint.memory import MemorySaver
+
 agent = create_agent(
-    model="gpt-4o",
-    tools=[dangerous_tool],
-    middleware=[hitl_middleware(interrupt_on=["dangerous_tool"])],
-    checkpointer=MemorySaver()
+    model="gpt-4.1",
+    tools=[send_email],
+    checkpointer=MemorySaver(),  # Required
+    middleware=[human_in_the_loop_middleware({...})],
 )
 ```
 
-### 2. **Thread ID Must Be Consistent**
+### 2. No thread_id
 
 ```python
-# ❌ Different thread IDs = can't resume
-agent.invoke({"messages": [...]}, config={"configurable": {"thread_id": "1"}})
-agent.invoke(
-    Command(resume={...}),
-    config={"configurable": {"thread_id": "2"}}  # Different ID!
-)
+# ❌ Problem: Missing thread_id
+agent.invoke(input)  # No config!
 
-# ✅ Use the same thread ID
-config = {"configurable": {"thread_id": "my-session"}}
-agent.invoke({"messages": [...]}, config=config)
-agent.invoke(Command(resume={...}), config=config)  # Same ID
+# ✅ Solution: Always provide thread_id
+agent.invoke(input, config={"configurable": {"thread_id": "user-123"}})
 ```
 
-### 3. **Command is for Resuming Only**
+### 3. Wrong Resume Syntax
 
 ```python
-# ❌ Can't use Command for initial invocation
+# ❌ Problem: Wrong resume format
+agent.invoke({"resume": {"decisions": [...]}})  # Wrong!
+
+# ✅ Solution: Use Command
+from langgraph.types import Command
+
 agent.invoke(
-    Command(resume={...}),
+    Command(resume={"decisions": [{"type": "approve"}]}),
     config=config
 )
-# Error: No state to resume
-
-# ✅ Initial invoke, then Command for resume
-agent.invoke({"messages": [...]}, config=config)  # First call
-agent.invoke(Command(resume={...}), config=config)  # Resume
 ```
 
-### 4. **Interrupt Detection in Updates Mode**
-
-```python
-# When streaming, check for "__interrupt__" in updates
-for mode, chunk in agent.stream(..., stream_mode=["updates"]):
-    if mode == "updates" and "__interrupt__" in chunk:
-        # Interrupt detected
-        print(chunk["__interrupt__"])
-```
-
-### 5. **Tools Execute Only After Approval**
-
-```python
-# Tools listed in interrupt_on won't execute until approved
-# Make sure the tool names match exactly
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[my_tool],  # Tool name: "my_tool"
-    middleware=[
-        hitl_middleware(
-            interrupt_on=["my_tool"]  # Must match tool name exactly
-        )
-    ],
-    checkpointer=MemorySaver()
-)
-```
-
-### 6. **Decision Types Must Be Valid**
-
-```python
-# ❌ Invalid decision type
-Command(resume={"decisions": [{"type": "maybe"}]})  # Wrong!
-
-# ✅ Use valid types: "approve", "edit", or "reject"
-Command(resume={"decisions": [{"type": "approve"}]})
-```
-
-## Links to Full Documentation
+## Links to Documentation
 
 - [Human-in-the-Loop Guide](https://docs.langchain.com/oss/python/langchain/human-in-the-loop)
-- [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
-- [Command API](https://docs.langchain.com/oss/python/langgraph/graph-api)
-- [Checkpointers](https://docs.langchain.com/oss/python/langgraph/persistence)
+- [LangGraph Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)

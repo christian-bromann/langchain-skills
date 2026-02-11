@@ -1,409 +1,406 @@
 ---
 name: langchain-streaming
-description: Stream LangChain agent responses including token streaming, stream modes (updates/messages/custom), and real-time updates for Python.
+description: Stream outputs from LangChain agents and models - includes stream modes, token streaming, progress updates, and real-time feedback
 language: python
 ---
 
 # langchain-streaming (Python)
 
----
-name: langchain-streaming
-description: Stream LangChain agent responses including token streaming, stream modes (updates/messages/custom), and real-time updates for Python.
-language: python
----
-
-# LangChain Streaming (Python)
-
 ## Overview
 
-Streaming provides real-time updates during agent execution, significantly improving user experience by displaying output progressively. LangChain supports streaming agent state, LLM tokens, and custom data.
+Streaming allows you to surface real-time updates from LangChain agents and models as they run. Instead of waiting for complete responses, you can display output progressively, improving user experience especially for long-running operations.
 
-**Key concepts:**
-- **Stream modes**: `updates`, `messages`, `custom` control what data is streamed
-- **Token streaming**: Real-time LLM output, token by token
-- **State streaming**: Agent progress and node transitions
-- **Custom streaming**: User-defined progress signals
+**Key Concepts:**
+- **Stream Modes**: Different types of data streams (values, updates, messages, custom)
+- **Token Streaming**: LLM tokens as they're generated
+- **Agent Progress**: State updates after each agent step
+- **Custom Updates**: User-defined progress signals
+
+## When to Use Streaming
+
+| Scenario | Stream? | Why |
+|----------|---------|-----|
+| Long model responses | ✅ Yes | Show tokens as generated |
+| Multi-step agent tasks | ✅ Yes | Show progress through steps |
+| Long-running tools | ✅ Yes | Provide progress updates |
+| Simple quick requests | ⚠️ Maybe | Overhead might not be worth it |
+| Backend batch processing | ❌ No | No user waiting for updates |
 
 ## Decision Tables
 
-### Choosing stream modes
+### Stream Mode Selection
 
-| Need | Stream Mode | What You Get |
-|------|------------|--------------|
-| Agent progress | `updates` | State changes after each step |
-| LLM tokens | `messages` | Token chunks + metadata |
-| Custom signals | `custom` | User-defined data from nodes |
-| Everything | `["updates", "messages", "custom"]` | All data types |
-
-### When to use streaming
-
-| Scenario | Use Streaming | Use invoke() |
-|----------|--------------|--------------|
-| UI applications | ✅ Better UX | ❌ Appears frozen |
-| Long-running tasks | ✅ Progress visible | ❌ No feedback |
-| Batch processing | ❌ Overhead | ✅ Simpler |
-| Short responses | ⚠️ Minimal benefit | ✅ Simpler |
+| Mode | Use When | Returns |
+|------|----------|---------|
+| `"values"` | Need full state after each step | Complete state dict |
+| `"updates"` | Need only what changed | State deltas |
+| `"messages"` | Need LLM token stream | (token, metadata) tuples |
+| `"custom"` | Need custom progress signals | User-defined data |
+| Multiple modes | Need combined data | List of modes |
 
 ## Code Examples
 
-### Basic Token Streaming
+### Basic Model Token Streaming
 
 ```python
-from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
 
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool]
-)
+model = ChatOpenAI(model="gpt-4.1")
 
-# Stream LLM tokens
-for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Tell me a story"}]},
-    stream_mode=["messages"]
-):
-    if mode == "messages":
-        token, metadata = chunk
-        if token.content:
-            print(token.content, end="", flush=True)
+# Stream tokens as they arrive
+for chunk in model.stream("Explain quantum computing in simple terms"):
+    print(chunk.content, end="", flush=True)
+# Output appears progressively: "Quantum" "computing" "is" ...
 ```
 
-### Stream Agent Updates
+### Agent Progress Streaming
 
 ```python
 from langchain.agents import create_agent
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool, calculator_tool]
+    model="gpt-4.1",
+    tools=[search_tool, calculator_tool],
 )
 
-# Stream state updates
+# Stream agent steps with "updates" mode
 for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Search and calculate"}]},
-    stream_mode=["updates"]
+    {"messages": [{"role": "user", "content": "Search for AI news and summarize"}]},
+    stream_mode=["updates"],
 ):
-    if mode == "updates":
-        node_name = list(chunk.keys())[0]
-        print(f"\nExecuting: {node_name}")
-        print(f"State update: {chunk}")
+    print(f"Step: {chunk}")
+# Shows each step: model call, tool execution, final response
 ```
 
-### Multiple Stream Modes
+### Combined Streaming (Messages + Updates)
 
 ```python
 from langchain.agents import create_agent
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool]
+    model="gpt-4.1",
+    tools=[search_tool],
 )
 
-# Stream both tokens and state updates
+# Stream both LLM tokens AND agent progress
 for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Search for info"}]},
-    stream_mode=["updates", "messages"]
+    {"messages": [{"role": "user", "content": "Research LangChain"}]},
+    stream_mode=["updates", "messages"],
 ):
     if mode == "messages":
-        # Handle LLM tokens
+        # LLM token stream
         token, metadata = chunk
         if token.content:
             print(token.content, end="", flush=True)
     elif mode == "updates":
-        # Handle state updates
-        print(f"\nNode: {list(chunk.keys())[0]}")
+        # Agent step updates
+        print(f"\nStep update: {chunk}")
 ```
 
-### Custom Streaming from Tools
+### Stream with Values Mode
 
 ```python
 from langchain.agents import create_agent
-from langchain.tools import tool
-import asyncio
-
-@tool
-def long_task(task: str) -> str:
-    """Execute a long-running task."""
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    # Emit custom progress updates
-    writer("Starting task...")
-    import time
-    time.sleep(1)
-    
-    writer("50% complete")
-    time.sleep(1)
-    
-    writer("Task finished!")
-    return "Task completed successfully"
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[long_task]
+    model="gpt-4.1",
+    tools=[weather_tool],
 )
+
+# Get full state after each step
+for mode, state in agent.stream(
+    {"messages": [{"role": "user", "content": "What's the weather?"}]},
+    stream_mode=["values"],
+):
+    print(f"Current messages: {len(state['messages'])}")
+    print(f"Last message: {state['messages'][-1].content}")
+```
+
+### Custom Progress Updates from Tools
+
+```python
+from langchain.tools import tool
+
+@tool
+async def process_data(data: list, runtime) -> str:
+    """Process data with progress updates."""
+    total = len(data)
+    
+    for i in range(0, total, 100):
+        # Emit custom progress update
+        await runtime.stream_writer.write({
+            "type": "progress",
+            "data": {
+                "processed": i,
+                "total": total,
+                "percentage": (i / total) * 100,
+            },
+        })
+        
+        # Do actual processing
+        await process_chunk(data[i:i+100])
+    
+    return "Processing complete"
 
 # Stream custom updates
 for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Run the long task"}]},
-    stream_mode=["custom", "updates"]
+    {"messages": [{"role": "user", "content": "Process this data"}]},
+    stream_mode=["custom", "updates"],
 ):
     if mode == "custom":
-        print(f"Progress: {chunk}")
+        print(f"Progress: {chunk['data']['percentage']}%")
+```
+
+### Streaming in FastAPI
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from langchain.agents import create_agent
+import json
+
+app = FastAPI()
+
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[search_tool],
+)
+
+@app.post("/api/chat")
+async def chat(messages: list):
+    async def generate():
+        try:
+            async for mode, chunk in agent.astream(
+                {"messages": messages},
+                stream_mode=["messages", "updates"],
+            ):
+                if mode == "messages":
+                    token, metadata = chunk
+                    if token.content:
+                        # Send token to client
+                        yield f"data: {json.dumps({'type': 'token', 'content': token.content})}\n\n"
+                elif mode == "updates":
+                    # Send step update to client
+                    yield f"data: {json.dumps({'type': 'step', 'data': str(chunk)})}\n\n"
+            
+            yield "data: [DONE]\n\n"
+        except Exception as error:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(error)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+```
+
+### Error Handling in Streams
+
+```python
+from langchain.agents import create_agent
+
+agent = create_agent(
+    model="gpt-4.1",
+    tools=[risky_tool],
+)
+
+try:
+    for mode, chunk in agent.stream(
+        {"messages": [{"role": "user", "content": "Do risky operation"}]},
+        stream_mode=["updates"],
+    ):
+        # Check for errors in updates
+        if "__error__" in chunk:
+            print(f"Error in stream: {chunk['__error__']}")
+            break
+        
+        print(f"Update: {chunk}")
+except Exception as error:
+    print(f"Stream error: {error}")
 ```
 
 ### Async Streaming
 
 ```python
 from langchain.agents import create_agent
+import asyncio
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool]
+    model="gpt-4.1",
+    tools=[async_tool],
 )
 
-# Async stream
-async for mode, chunk in agent.astream(
-    {"messages": [{"role": "user", "content": "Tell me about AI"}]},
-    stream_mode=["messages"]
-):
-    if mode == "messages":
-        token, metadata = chunk
-        if token.content:
-            print(token.content, end="", flush=True)
+async def main():
+    async for mode, chunk in agent.astream(
+        {"messages": [{"role": "user", "content": "Process async"}]},
+        stream_mode=["updates"],
+    ):
+        print(f"Update: {chunk}")
+
+asyncio.run(main())
 ```
 
-### Streaming with Human-in-the-Loop
+### Buffering Tokens for Display
 
 ```python
-from langchain.agents import create_agent, hitl_middleware
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
+from langchain_openai import ChatOpenAI
 
-agent = create_agent(
-    model="gpt-4o",
-    tools=[delete_records_tool],
-    middleware=[hitl_middleware(interrupt_on=["delete_records"])],
-    checkpointer=MemorySaver()
-)
+model = ChatOpenAI(model="gpt-4.1")
 
-config = {"configurable": {"thread_id": "conversation-1"}}
+buffer = ""
+for chunk in model.stream("Write a long essay"):
+    buffer += chunk.content
+    
+    # Update UI every 10 characters or on complete words
+    if len(buffer) >= 10 or " " in chunk.content:
+        print(buffer, end="", flush=True)
+        buffer = ""
 
-# Stream until interrupt
-for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Delete old data"}]},
-    config=config,
-    stream_mode=["updates", "messages"]
-):
-    if mode == "messages":
-        token, metadata = chunk
-        if token.content:
-            print(token.content, end="", flush=True)
-    elif mode == "updates":
-        if "__interrupt__" in chunk:
-            print("\n\nInterrupt detected!")
-            # Get human approval...
-            break
-
-# Resume with streaming
-for mode, chunk in agent.stream(
-    Command(resume={"decisions": [{"type": "approve"}]}),
-    config=config,
-    stream_mode=["updates", "messages"]
-):
-    # Continue streaming...
-    pass
+# Flush remaining buffer
+if buffer:
+    print(buffer, end="", flush=True)
 ```
 
-### Disable Streaming for a Model
-
-```python
-from langchain.chat_models import init_chat_model
-
-# Disable streaming for this model
-model = init_chat_model("gpt-4o", streaming=False)
-
-# Even in a streaming context, this model won't stream
-```
-
-### Stream Events API
-
-```python
-from langchain.chat_models import init_chat_model
-
-model = init_chat_model("gpt-4o")
-
-# Stream semantic events
-async for event in model.astream_events("Tell me a joke"):
-    if event["event"] == "on_chat_model_start":
-        print(f"Input: {event['data']['input']}")
-    elif event["event"] == "on_chat_model_stream":
-        print(event["data"]["chunk"].text, end="", flush=True)
-    elif event["event"] == "on_chat_model_end":
-        print(f"\nFull message: {event['data']['output'].text}")
-```
-
-### Collecting Streamed Output
+### Stream with Context Manager
 
 ```python
 from langchain.agents import create_agent
 
 agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool]
+    model="gpt-4.1",
+    tools=[search_tool],
 )
 
-full_response = ""
-
-for mode, chunk in agent.stream(
-    {"messages": [{"role": "user", "content": "Tell me about AI"}]},
-    stream_mode=["messages"]
-):
-    if mode == "messages":
-        token, metadata = chunk
-        if token.content:
-            full_response += token.content
-            print(token.content, end="", flush=True)
-
-print(f"\n\nComplete response: {full_response}")
-```
-
-### Custom Streaming with Writer Parameter (Python < 3.11)
-
-```python
-from langchain.tools import tool
-from langgraph.types import StreamWriter
-
-# For async code in Python < 3.11
-@tool
-async def async_task(task: str, writer: StreamWriter) -> str:
-    """Execute an async task with progress updates."""
-    writer("Starting async task...")
-    await asyncio.sleep(1)
-    
-    writer("Processing...")
-    await asyncio.sleep(1)
-    
-    writer("Done!")
-    return "Task completed"
+# Using context manager for cleanup
+with agent.stream(
+    {"messages": [{"role": "user", "content": "Search something"}]},
+    stream_mode=["updates"],
+) as stream:
+    for mode, chunk in stream:
+        print(chunk)
+        if some_condition:
+            break  # Properly cleaned up
 ```
 
 ## Boundaries
 
-### ✅ What Streaming CAN Do
+### What You CAN Configure
 
-- **Stream LLM tokens**: Real-time text generation
-- **Stream state updates**: Agent progress and node transitions
-- **Stream custom data**: User-defined progress signals
-- **Multiple modes simultaneously**: Combine different stream types
-- **Work with interrupts**: Stream until human input needed
-- **Handle errors**: Exceptions propagate through stream
-- **Support async**: Full async streaming with astream()
+✅ **Stream modes**: Choose which data to stream
+✅ **Multiple modes**: Combine different stream types
+✅ **Custom updates**: Emit user-defined progress data
+✅ **Chunk processing**: Handle each chunk as needed
+✅ **Error handling**: Catch and handle stream errors
 
-### ❌ What Streaming CANNOT Do
+### What You CANNOT Configure
 
-- **Replay streams**: Streams are consumed once
-- **Random access**: Can't skip ahead or go backward
-- **Modify past chunks**: Already emitted data is final
-- **Guarantee order**: Async operations may emit out of order
-- **Store state automatically**: Must collect manually
+❌ **Chunk size**: Determined by model/provider
+❌ **Chunk timing**: Arrives as provider sends
+❌ **Guarantee order**: Async streams may vary
+❌ **Modify past chunks**: Chunks are immutable
 
 ## Gotchas
 
-### 1. **Specify Stream Modes Explicitly**
+### 1. Tuple Unpacking for Messages Mode
 
 ```python
-# ❌ Default behavior may not show what you need
-for chunk in agent.stream({"messages": [...]}):
-    # Missing mode information!
-    pass
+# ❌ Problem: Not unpacking messages mode
+for mode, chunk in agent.stream(input, stream_mode=["messages"]):
+    print(chunk.content)  # AttributeError!
 
-# ✅ Specify stream modes
+# ✅ Solution: Messages mode returns (token, metadata) tuple
+for mode, chunk in agent.stream(input, stream_mode=["messages"]):
+    token, metadata = chunk
+    print(token.content)  # Correct!
+```
+
+### 2. Stream Mode Confusion
+
+```python
+# ❌ Problem: Using wrong mode for tokens
+for mode, chunk in agent.stream(input, stream_mode=["updates"]):
+    print(chunk.content)  # AttributeError!
+
+# ✅ Solution: Use "messages" mode for tokens
+for mode, chunk in agent.stream(input, stream_mode=["messages"]):
+    token, metadata = chunk
+    print(token.content)
+```
+
+### 3. Sync vs Async
+
+```python
+# ❌ Problem: Using sync stream in async context
+async def process():
+    for mode, chunk in agent.stream(input):  # Blocks async loop!
+        print(chunk)
+
+# ✅ Solution: Use astream for async
+async def process():
+    async for mode, chunk in agent.astream(input):
+        print(chunk)
+```
+
+### 4. Not Handling All Modes
+
+```python
+# ❌ Problem: Not checking mode in multi-mode streaming
 for mode, chunk in agent.stream(
-    {"messages": [...]},
+    input,
     stream_mode=["updates", "messages"]
 ):
-    # Now you can handle different types
-    pass
-```
+    print(chunk.content)  # Will fail for updates mode
 
-### 2. **Stream Modes Are Lists**
-
-```python
-# ❌ Wrong - string instead of list
-agent.stream({"messages": [...]}, stream_mode="updates")
-
-# ✅ Correct - list of modes
-agent.stream({"messages": [...]}, stream_mode=["updates"])
-```
-
-### 3. **Messages Mode Returns Tuples**
-
-```python
-# The "messages" mode returns (token, metadata) tuples
+# ✅ Solution: Check mode before accessing
 for mode, chunk in agent.stream(
-    {"messages": [...]},
-    stream_mode=["messages"]
+    input,
+    stream_mode=["updates", "messages"]
 ):
     if mode == "messages":
-        token, metadata = chunk  # Unpack tuple
+        token, metadata = chunk
         print(token.content)
+    elif mode == "updates":
+        print(f"Step: {chunk}")
 ```
 
-### 4. **get_stream_writer Not in Async (Python < 3.11)**
+### 5. Flush for Real-time Display
 
 ```python
-# ❌ Doesn't work in async code on Python < 3.11
-from langgraph.config import get_stream_writer
+# ❌ Problem: Output not appearing in real-time
+for chunk in model.stream("Long response"):
+    print(chunk.content)  # May be buffered
 
-@tool
-async def async_tool(input: str) -> str:
-    writer = get_stream_writer()  # Won't work!
-    return "result"
-
-# ✅ Use writer parameter instead
-from langgraph.types import StreamWriter
-
-@tool
-async def async_tool(input: str, writer: StreamWriter) -> str:
-    writer("Progress update")
-    return "result"
+# ✅ Solution: Use flush=True
+for chunk in model.stream("Long response"):
+    print(chunk.content, end="", flush=True)  # Real-time display
 ```
 
-### 5. **Auto-Streaming with invoke()**
+### 6. Generator Exhaustion
 
 ```python
-# In LangGraph agents, models auto-stream even with invoke()
-# when the overall application is streaming
+# ❌ Problem: Re-using exhausted generator
+stream = agent.stream(input)
+for mode, chunk in stream:
+    print(chunk)
 
-agent = create_agent(model="gpt-4o", tools=[search_tool])
+for mode, chunk in stream:  # Empty! Generator exhausted
+    print(chunk)
 
-# The model.invoke() inside the agent will stream
-# when agent.stream() is called
-for mode, chunk in agent.stream({"messages": [...]}):
-    # Tokens are streamed automatically
-    pass
+# ✅ Solution: Create new stream each time
+for mode, chunk in agent.stream(input):
+    print(chunk)
+
+# Later...
+for mode, chunk in agent.stream(input):  # New stream
+    print(chunk)
 ```
 
-### 6. **Flush for Real-time Output**
-
-```python
-# ❌ Without flush, output is buffered
-for mode, chunk in agent.stream(...):
-    if mode == "messages":
-        token, _ = chunk
-        print(token.content, end="")  # Buffered!
-
-# ✅ Use flush=True for immediate output
-for mode, chunk in agent.stream(...):
-    if mode == "messages":
-        token, _ = chunk
-        print(token.content, end="", flush=True)
-```
-
-## Links to Full Documentation
+## Links to Documentation
 
 - [Streaming Overview](https://docs.langchain.com/oss/python/langchain/streaming/overview)
 - [LangGraph Streaming](https://docs.langchain.com/oss/python/langgraph/streaming)
-- [Stream Events API](https://docs.langchain.com/oss/python/langchain/models)
-- [Streaming with HITL](https://docs.langchain.com/oss/python/langchain/human-in-the-loop)
+- [Model Streaming](https://docs.langchain.com/oss/python/langchain/models)
+- [Human-in-the-Loop Streaming](https://docs.langchain.com/oss/python/langchain/human-in-the-loop)

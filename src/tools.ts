@@ -73,6 +73,13 @@ export const fetchWebPageTool = tool(
 
 export const generateSkillFileTool = tool(
     async ({ name, description, content, language, outputPath }) => {
+        if (!content || content.trim().length === 0) {
+            throw new Error(
+                `The 'content' parameter is required and must not be empty. ` +
+                `Please provide the full markdown content with code examples for the "${name}" skill.`
+            );
+        }
+
         const lang = language || "js";
         
         // Skills output directory - all paths are relative to this
@@ -91,7 +98,15 @@ language: ${lang}
 ---
 
 `;
-        const fullContent = frontmatter + `# ${name} (${languageLabel})\n\n` + content;
+        // Strip any leading frontmatter and/or heading the agent may have included
+        // in the content to avoid duplication (the tool always prepends its own)
+        let cleanedContent = content;
+        // Remove leading YAML frontmatter (--- ... ---)
+        cleanedContent = cleanedContent.replace(/^\s*---[\s\S]*?---\s*/, "");
+        // Remove leading markdown heading (e.g., "# LangChain Agents (Python)")
+        cleanedContent = cleanedContent.replace(/^\s*#\s+[^\n]+\n*/, "");
+
+        const fullContent = frontmatter + `# ${name} (${languageLabel})\n\n` + cleanedContent;
 
         const dirPath = langOutputPath.substring(0, langOutputPath.lastIndexOf("/"));
         if (dirPath) {
@@ -146,7 +161,7 @@ language: ${lang}
             language: z
                 .enum(["js", "python"])
                 .describe("Target language: 'js' for JavaScript/TypeScript or 'python' for Python"),
-            content: z.string().describe("Full markdown content with code examples in the specified language"),
+            content: z.string().default("").describe("Full markdown content with code examples in the specified language. REQUIRED - must not be empty."),
             outputPath: z
                 .string()
                 .describe(

@@ -1,48 +1,41 @@
 ---
 name: langchain-tools
-description: Define and use LangChain tools including tool decorators, schemas, tool calling patterns, and custom vs built-in tools for Python.
+description: Define and use tools in LangChain - includes @tool decorator, custom tools, built-in tools, and tool schemas
 language: python
 ---
 
 # langchain-tools (Python)
 
----
-name: langchain-tools
-description: Define and use LangChain tools including tool decorators, schemas, tool calling patterns, and custom vs built-in tools for Python.
-language: python
----
-
-# LangChain Tools (Python)
-
 ## Overview
 
-Tools extend what agents can do—letting them fetch real-time data, execute code, query databases, and take actions in the world. Tools are callable functions with well-defined inputs and outputs that models can invoke based on context.
+Tools are functions that agents can execute to perform actions like fetching data, running code, or querying databases. Tools have schemas that describe their purpose and parameters, helping models understand when and how to use them.
 
-**Key concepts:**
-- Tools have a **name**, **description**, and **schema** (input parameters)
-- Models decide when to call tools and what arguments to provide
-- Tools can be functions or coroutines (async)
-- Some providers offer built-in server-side tools (web search, code interpreter)
+**Key Concepts:**
+- **@tool**: Decorator to create tools from functions
+- **Schema**: Pydantic models or type hints defining parameters
+- **Description**: Helps model understand when to use the tool
+- **Built-in Tools**: Pre-made tools for common tasks
+
+## When to Define Custom Tools
+
+| Scenario | Create Custom Tool? | Why |
+|----------|---------------------|-----|
+| Domain-specific logic | ✅ Yes | Unique to your application |
+| Third-party API integration | ✅ Yes | Custom integration needed |
+| Database queries | ✅ Yes | Your schema/data |
+| Common utilities (search, calc) | ⚠️ Maybe | Check for existing tools first |
+| File operations | ⚠️ Maybe | Built-in filesystem tools exist |
 
 ## Decision Tables
 
-### When to use custom tools vs built-in tools
+### Tool Definition Methods
 
-| Scenario | Custom Tools | Built-in Tools |
-|----------|-------------|----------------|
-| Provider-specific features | ❌ Not available | ✅ OpenAI, Anthropic tools |
-| Custom business logic | ✅ Required | ❌ Not supported |
-| External API integration | ✅ Full control | ❌ Limited |
-| Quick prototyping | ✅ Fast setup | ✅ Zero setup |
-| Enterprise use cases | ✅ Customizable | ⚠️ Provider-dependent |
-
-### Choosing tool definition method
-
-| Method | Best For | Pros | Cons |
-|--------|----------|------|------|
-| `@tool` decorator | Simple tools | Clean, concise | Less control |
-| Class-based | Complex tools | Full control, stateful | More verbose |
-| JSON schema | Interoperability | Standard format | Manual validation |
+| Method | When to Use | Example |
+|--------|-------------|---------|
+| `@tool` decorator | Simple functions | Basic transformations |
+| `@tool` with Pydantic | Complex parameters | Multiple typed fields |
+| `StructuredTool` | Full control | Custom error handling |
+| Built-in tools | Common operations | Search, code execution |
 
 ## Code Examples
 
@@ -50,71 +43,41 @@ Tools extend what agents can do—letting them fetch real-time data, execute cod
 
 ```python
 from langchain.tools import tool
-
-# Define a simple tool
-@tool
-def search(query: str) -> str:
-    """Search for information on the internet."""
-    # Simulated search
-    return f"Search results for: {query}"
-
-# Use with a model
-from langchain_openai import ChatOpenAI
-
-model = ChatOpenAI(model="gpt-4o")
-model_with_tools = model.bind_tools([search])
-
-response = model_with_tools.invoke("Search for LangChain docs")
-print(response.tool_calls)
-# [{'name': 'search', 'args': {'query': 'LangChain docs'}, 'id': 'call_123'}]
-```
-
-### Tool with Multiple Parameters
-
-```python
-from langchain.tools import tool
+from typing import Literal
 
 @tool
-def get_weather(location: str, units: str = "fahrenheit") -> str:
-    """Get current weather for a location.
+def calculator(
+    operation: Literal["add", "subtract", "multiply", "divide"],
+    a: float,
+    b: float,
+) -> float:
+    """Perform mathematical calculations.
+    
+    Use this when you need to compute numbers.
     
     Args:
-        location: City name or coordinates
-        units: Temperature units (celsius or fahrenheit)
+        operation: The mathematical operation to perform
+        a: First number
+        b: Second number
     """
-    return f"Weather in {location}: 72°{'C' if units == 'celsius' else 'F'}, sunny"
-```
+    if operation == "add":
+        return a + b
+    elif operation == "subtract":
+        return a - b
+    elif operation == "multiply":
+        return a * b
+    elif operation == "divide":
+        return a / b
+    else:
+        raise ValueError(f"Unknown operation: {operation}")
 
-### Tool with Custom Name
-
-```python
-from langchain.tools import tool
-
-# By default, tool name comes from the function name
-@tool("custom_tool_name")
-def my_function(input: str) -> str:
-    """A tool with a custom name."""
-    return f"Processed: {input}"
-```
-
-### Async Tools (Coroutines)
-
-```python
-from langchain.tools import tool
-import asyncio
-import aiohttp
-
-@tool
-async def call_api(endpoint: str) -> str:
-    """Call an external API.
-    
-    Args:
-        endpoint: API endpoint path
-    """
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://api.example.com/{endpoint}") as response:
-            data = await response.json()
-            return str(data)
+# Use with agent
+result = calculator.invoke({
+    "operation": "add",
+    "a": 5,
+    "b": 3,
+})
+print(result)  # "8.0"
 ```
 
 ### Tool with Pydantic Schema
@@ -122,363 +85,448 @@ async def call_api(endpoint: str) -> str:
 ```python
 from langchain.tools import tool
 from pydantic import BaseModel, Field
+from typing import Optional
 
-class UserSettings(BaseModel):
-    """User settings model."""
-    name: str = Field(..., description="User's name")
-    email: str = Field(..., description="User's email")
-    theme: str = Field(..., description="UI theme (light/dark)")
+class SearchFilters(BaseModel):
+    status: Optional[Literal["active", "inactive", "pending"]] = None
+    created_after: Optional[str] = Field(None, description="ISO date string")
 
-@tool
-def update_user(settings: UserSettings) -> str:
-    """Update user settings.
-    
-    Args:
-        settings: User configuration object
-    """
-    return f"Updated user {settings.name} with theme {settings.theme}"
+class SearchParams(BaseModel):
+    query: str = Field(description="Search query (keywords or customer name)")
+    limit: int = Field(default=10, description="Maximum number of results")
+    filters: Optional[SearchFilters] = None
+
+@tool(args_schema=SearchParams)
+def search_database(query: str, limit: int = 10, filters: Optional[dict] = None) -> str:
+    """Search the customer database for records matching criteria."""
+    # Your database search logic
+    return f"Found {limit} results for: {query}"
 ```
 
-### Binding Tools to a Model
+### Async Tool
 
 ```python
-from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+import aiohttp
+
+@tool
+async def fetch_weather(location: str) -> str:
+    """Get current weather conditions for a location.
+    
+    Args:
+        location: City name or ZIP code
+    """
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"https://api.weather.com/v1/location/{location}"
+        ) as response:
+            data = await response.json()
+            return f"Temperature: {data['temp']}°F, Conditions: {data['conditions']}"
+```
+
+### Tool with Error Handling
+
+```python
 from langchain.tools import tool
 
 @tool
-def calculator(expression: str) -> str:
-    """Evaluate a mathematical expression.
+def divide(numerator: float, denominator: float) -> float:
+    """Divide two numbers.
     
     Args:
-        expression: Math expression to evaluate
+        numerator: The number to divide
+        denominator: The number to divide by
     """
-    return str(eval(expression))  # Don't use eval in production!
+    if denominator == 0:
+        raise ValueError("Cannot divide by zero")
+    return numerator / denominator
 
-model = ChatOpenAI(model="gpt-4o")
-
-# Bind tools to the model
-model_with_tools = model.bind_tools([calculator, search])
-
-# Model can now call these tools
-response = model_with_tools.invoke("What is 15 * 23?")
+# Error will be caught and returned as ToolMessage
 ```
 
-### Executing Tool Calls
+### Tool with Side Effects
 
 ```python
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import ToolMessage
+from langchain.tools import tool
+from pathlib import Path
 
-model = ChatOpenAI(model="gpt-4o")
-model_with_tools = model.bind_tools([calculator])
-
-# Get model response with tool calls
-response = model_with_tools.invoke("What is 25 + 17?")
-
-# Execute tools manually
-tool_results = []
-for tool_call in response.tool_calls:
-    if tool_call["name"] == "calculator":
-        result = calculator.invoke(tool_call)
-        tool_results.append(result)
-
-# Return results to model
-final_response = model.invoke([
-    {"role": "user", "content": "What is 25 + 17?"},
-    response,
-    *tool_results,
-])
-
-print(final_response.content)  # "25 + 17 equals 42"
+@tool
+def write_file(filepath: str, content: str) -> str:
+    """Write content to a file.
+    
+    Use carefully as this modifies the filesystem.
+    
+    Args:
+        filepath: Path to the file
+        content: Content to write
+    """
+    Path(filepath).write_text(content, encoding="utf-8")
+    return f"Successfully wrote {len(content)} characters to {filepath}"
 ```
 
-### Tool Choice (Force Tool Usage)
+### Tool with External Dependencies
 
 ```python
-from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+import requests
+import os
 
-model = ChatOpenAI(model="gpt-4o")
-
-# Force the model to use a specific tool
-model_with_forced_tool = model.bind_tools([search], tool_choice="search")
-
-# Force any tool (but must use at least one)
-model_with_any_tool = model.bind_tools([search, get_weather], tool_choice="any")
-
-# Let model decide (default behavior)
-model_with_optional_tools = model.bind_tools([search])
+@tool
+def search_github(query: str, language: str = None) -> str:
+    """Search GitHub repositories.
+    
+    Args:
+        query: Search query
+        language: Programming language filter (optional)
+    """
+    params = {"q": f"{query} language:{language}" if language else query, "sort": "stars"}
+    headers = {"Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"}
+    
+    response = requests.get(
+        "https://api.github.com/search/repositories",
+        params=params,
+        headers=headers,
+    )
+    
+    repos = response.json()["items"][:5]
+    return "\n".join([f"{r['full_name']} (⭐ {r['stargazers_count']})" for r in repos])
 ```
 
-### Parallel Tool Calling
+### Tool with Complex Return Type
 
 ```python
-from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+import json
 
-model = ChatOpenAI(model="gpt-4o")
-model_with_tools = model.bind_tools([get_weather])
-
-# Model can call multiple tools in parallel
-response = model_with_tools.invoke("What's the weather in Boston and Tokyo?")
-
-print(response.tool_calls)
-# [
-#     {'name': 'get_weather', 'args': {'location': 'Boston'}, 'id': 'call_1'},
-#     {'name': 'get_weather', 'args': {'location': 'Tokyo'}, 'id': 'call_2'}
-# ]
-
-# Execute all tools (can be done in parallel with asyncio)
-import asyncio
-results = [get_weather.invoke(tc) for tc in response.tool_calls]
+@tool
+def analyze_text(text: str) -> str:
+    """Analyze text statistics.
+    
+    Args:
+        text: Text to analyze
+    """
+    words = text.split()
+    
+    stats = {
+        "word_count": len(words),
+        "char_count": len(text),
+        "sentences": len(text.split(".")),
+        "avg_word_length": sum(len(w) for w in words) / len(words) if words else 0,
+    }
+    
+    return json.dumps(stats)
 ```
 
-### Built-in Server-Side Tools (OpenAI)
+### Tool with Runtime Configuration
 
 ```python
-from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from typing import Callable
 
-# OpenAI built-in tools
-model = ChatOpenAI(
-    model="gpt-4o",
-    tools=[
-        {"type": "web_search"},  # Built-in web search
-        {"type": "code_interpreter"},  # Built-in code execution
-    ]
+def create_database_tool(connection_string: str):
+    """Factory function to create database tool with specific config."""
+    
+    @tool
+    def query_database(query: str) -> str:
+        """Execute SQL query on the database.
+        
+        Args:
+            query: SQL query to execute
+        """
+        # Use connection_string to connect to DB
+        results = db.query(query)
+        return json.dumps(results)
+    
+    return query_database
+
+# Create tools with specific configurations
+prod_db_tool = create_database_tool(os.getenv("PROD_DB_URL"))
+dev_db_tool = create_database_tool(os.getenv("DEV_DB_URL"))
+```
+
+### Multiple Related Tools
+
+```python
+from langchain.tools import tool
+
+# Toolkit pattern: group of related tools
+@tool
+def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email message.
+    
+    Args:
+        to: Recipient email address
+        subject: Email subject
+        body: Email body content
+    """
+    # Send email logic
+    return f"Email sent to {to}"
+
+@tool
+def read_emails(folder: str = "inbox", limit: int = 10) -> str:
+    """Read emails from a folder.
+    
+    Args:
+        folder: Email folder name (default: inbox)
+        limit: Maximum emails to retrieve (default: 10)
+    """
+    # Read emails logic
+    return f"Retrieved {limit} emails from {folder}"
+
+# Group related tools
+email_tools = [send_email, read_emails]
+
+# Use all email tools
+from langchain.agents import create_agent
+agent = create_agent(
+    model="gpt-4.1",
+    tools=email_tools,
 )
-
-response = model.invoke("Search the web for Python tutorials")
-# Model uses OpenAI's built-in web search
 ```
 
-### Tool Error Handling
-
-```python
-from langchain.tools import tool
-
-@tool
-def risky_tool(input: str) -> str:
-    """A tool that might fail.
-    
-    Args:
-        input: Input string
-    """
-    if input == "fail":
-        raise ValueError("Tool execution failed!")
-    return f"Success: {input}"
-
-# Handle errors with middleware (see Middleware skill file)
-# Or catch manually
-try:
-    result = risky_tool.invoke({"input": "fail"})
-except Exception as e:
-    print(f"Tool failed: {e}")
-```
-
-### Tool with Custom Arguments Schema
+### Tool with Pydantic Field Descriptions
 
 ```python
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
-class SearchArgs(BaseModel):
-    """Arguments for search tool."""
-    query: str = Field(..., description="Search query")
-    max_results: int = Field(10, description="Maximum results to return")
-    language: str = Field("en", description="Language code")
+class UserLookup(BaseModel):
+    user_id: str = Field(description="User ID to lookup")
 
-@tool(args_schema=SearchArgs)
-def advanced_search(query: str, max_results: int = 10, language: str = "en") -> str:
-    """Perform an advanced search with custom parameters."""
-    return f"Found {max_results} results for '{query}' in {language}"
+@tool(args_schema=UserLookup)
+def get_user(user_id: str) -> str:
+    """Get user information by ID."""
+    user = db.users.find_by_id(user_id)
+    
+    return json.dumps({
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "created": user.created_at.isoformat(),
+    })
 ```
 
-### Tool with Return Direct
+### Tool with Streaming Updates
 
 ```python
 from langchain.tools import tool
 
-@tool(return_direct=True)
-def get_final_answer(answer: str) -> str:
-    """Return the final answer to the user.
+@tool
+async def process_large_file(filepath: str, runtime) -> str:
+    """Process a large file with progress updates.
     
     Args:
-        answer: The final answer to return
+        filepath: Path to file to process
     """
-    return answer
+    total_lines = 1000
+    
+    for i in range(0, total_lines, 100):
+        # Stream progress updates
+        await runtime.stream_writer.write({
+            "type": "progress",
+            "data": {"processed": i, "total": total_lines},
+        })
+        
+        # Process chunk
+        await process_chunk(i, i + 100)
+    
+    return "Processing complete"
+```
 
-# When this tool is called, the agent immediately returns its result
-# without further processing
+### Tool with StructuredTool
+
+```python
+from langchain.tools import StructuredTool
+from pydantic import BaseModel, Field
+
+class CalculatorInput(BaseModel):
+    operation: str = Field(description="Operation to perform")
+    a: float = Field(description="First number")
+    b: float = Field(description="Second number")
+
+def _calculate(operation: str, a: float, b: float) -> float:
+    """Internal calculation logic."""
+    operations = {
+        "add": lambda x, y: x + y,
+        "subtract": lambda x, y: x - y,
+        "multiply": lambda x, y: x * y,
+        "divide": lambda x, y: x / y,
+    }
+    return operations[operation](a, b)
+
+calculator_tool = StructuredTool.from_function(
+    func=_calculate,
+    name="calculator",
+    description="Perform mathematical calculations",
+    args_schema=CalculatorInput,
+)
 ```
 
 ## Boundaries
 
-### ✅ What Tools CAN Do
+### What You CAN Configure
 
-- **Execute arbitrary code**: Any Python function
-- **Make API calls**: HTTP requests, database queries, etc.
-- **Access external services**: Files, databases, web APIs
-- **Return structured data**: Dicts, strings, numbers, Pydantic models
-- **Support async operations**: Coroutines and async/await
-- **Validate inputs**: Using Pydantic models
-- **Be stateful**: Store data between calls (if needed)
+✅ **Function logic**: Any Python code
+✅ **Parameters**: Via type hints or Pydantic models
+✅ **Name and description**: Guide model's tool selection
+✅ **Return value**: Any serializable data (string, JSON, etc.)
+✅ **Async operations**: Tools can be async
+✅ **Error handling**: Raise exceptions or return error messages
 
-### ❌ What Tools CANNOT Do
+### What You CANNOT Configure
 
-- **Run without being called by model**: Models must explicitly invoke them
-- **Access agent state directly**: Must receive state as parameters
-- **Modify model behavior**: Tools provide data, not control
-- **Guarantee execution order**: Model decides order (unless forced)
-- **Handle streaming automatically**: Return complete results, not streams
-- **Persist data automatically**: Must use external storage
+❌ **When model calls tool**: Model decides based on context
+❌ **Tool call order**: Model determines execution flow
+❌ **Parameter values**: Model generates based on schema
+❌ **Response format from model**: Tool returns, model interprets
 
 ## Gotchas
 
-### 1. **Descriptions Are Critical for Tool Selection**
+### 1. Poor Tool Descriptions
 
 ```python
-# ❌ Vague description
+# ❌ Problem: Vague description
 @tool
-def process(input: str) -> str:
-    """Process input."""  # Too vague!
-    return input.upper()
+def bad_tool(data: str) -> str:
+    """Does something with data."""  # Too vague!
+    return "result"
 
-# ✅ Clear, specific description
+# ✅ Solution: Specific, actionable description
 @tool
-def to_uppercase(input: str) -> str:
-    """Convert a string to uppercase letters.
+def search_customers(query: str) -> str:
+    """Search customer database by name, email, or ID.
+    
+    Returns customer records with contact information.
+    Use this when user asks about customer data.
     
     Args:
-        input: The text to convert to uppercase
+        query: Customer name, email, or ID to search for
     """
-    return input.upper()
+    return search_database(query)
 ```
 
-### 2. **Type Hints Are Required**
+### 2. Missing Type Hints
 
 ```python
-# ❌ Missing type hints
+# ❌ Problem: No type hints
 @tool
-def add(x, y):  # No type hints!
-    """Add two numbers."""
-    return x + y
+def bad_tool(query, limit):  # No types!
+    """Search database."""
+    return "result"
 
-# ✅ Include type hints
+# ✅ Solution: Always use type hints
 @tool
-def add(x: int, y: int) -> int:
-    """Add two numbers.
+def good_tool(query: str, limit: int = 10) -> str:
+    """Search database.
     
     Args:
-        x: First number
-        y: Second number
+        query: Search terms or keywords
+        limit: Maximum results to return (1-100)
     """
-    return x + y
+    return "result"
 ```
 
-### 3. **Tool Names Must Be Unique**
-
-```python
-# ❌ Duplicate tool names cause conflicts
-@tool("my_tool")
-def function_one(input: str) -> str:
-    """First tool."""
-    return "result 1"
-
-@tool("my_tool")  # Same name!
-def function_two(input: str) -> str:
-    """Second tool."""
-    return "result 2"
-
-# ✅ Unique names
-@tool("tool_a")
-def function_one(input: str) -> str:
-    """Tool A."""
-    return "result A"
-
-@tool("tool_b")
-def function_two(input: str) -> str:
-    """Tool B."""
-    return "result B"
-```
-
-### 4. **Tools Must Return Serializable Data**
+### 3. Non-Serializable Return Values
 
 ```python
 from datetime import datetime
 
-# ❌ Returning non-serializable objects
+# ❌ Problem: Returning complex objects
 @tool
-def get_date() -> datetime:
-    """Get current date."""
-    return datetime.now()  # datetime objects aren't JSON-serializable!
+def bad_get_time() -> datetime:
+    """Get current time."""
+    return datetime.now()  # datetime not JSON-serializable
 
-# ✅ Return strings or JSON-serializable objects
+# ✅ Solution: Return strings or JSON
 @tool
-def get_date() -> str:
-    """Get current date as ISO string."""
+def good_get_time() -> str:
+    """Get current time."""
     return datetime.now().isoformat()
+
+# Or stringify objects
+import json
+
+@tool
+def get_data() -> str:
+    """Get data."""
+    return json.dumps({
+        "timestamp": datetime.now().timestamp(),
+        "user": get_current_user(),
+    })
 ```
 
-### 5. **Async Tools Need Await**
+### 4. Missing Docstrings
 
 ```python
+# ❌ Problem: No docstring
+@tool
+def bad_tool(input: str) -> str:
+    return "result"  # No description!
+
+# ✅ Solution: Always provide docstring
+@tool
+def good_tool(input: str) -> str:
+    """Process input data and return results.
+    
+    Use this tool when you need to transform user input.
+    
+    Args:
+        input: The data to process
+    """
+    return "result"
+```
+
+### 5. Forgetting Async
+
+```python
+import requests
+
+# ❌ Problem: Using sync in async context
+@tool
+async def bad_fetch(url: str) -> str:
+    """Fetch URL."""
+    response = requests.get(url)  # Blocking!
+    return response.text
+
+# ✅ Solution: Use async libraries
 import aiohttp
 
 @tool
-async def fetch_data(url: str) -> str:
-    """Fetch data from URL."""
+async def good_fetch(url: str) -> str:
+    """Fetch URL content.
+    
+    Args:
+        url: URL to fetch
+    """
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             return await response.text()
-
-# When calling the tool:
-# ❌ Wrong
-result = fetch_data.invoke({"url": "..."})  # Returns coroutine!
-
-# ✅ Correct
-result = await fetch_data.ainvoke({"url": "..."})
 ```
 
-### 6. **Docstrings Are Used for Descriptions**
+### 6. Tool Names with Spaces or Special Chars
 
 ```python
-# The function's docstring becomes the tool description
+# ❌ Problem: Invalid tool name
+@tool(name="Get Weather!")  # Special chars not allowed
+def bad_tool() -> str:
+    """Get weather."""
+    return "result"
+
+# ✅ Solution: Use snake_case
+@tool(name="get_weather")  # Valid name
+def good_tool() -> str:
+    """Get weather."""
+    return "result"
+
+# Or let decorator infer from function name
 @tool
-def my_tool(input: str) -> str:
-    """This docstring is shown to the model!
-    
-    The model uses this to decide when to call the tool.
-    Make it clear and informative.
-    
-    Args:
-        input: Description of the parameter
-    """
-    return f"Processed: {input}"
+def get_weather() -> str:  # Name will be "get_weather"
+    """Get weather."""
+    return "result"
 ```
 
-### 7. **Pydantic Models Provide Better Validation**
-
-```python
-from pydantic import BaseModel, Field, field_validator
-
-class ToolInput(BaseModel):
-    """Validated input schema."""
-    age: int = Field(..., ge=0, le=150, description="Person's age")
-    email: str = Field(..., description="Email address")
-    
-    @field_validator("email")
-    def validate_email(cls, v):
-        if "@" not in v:
-            raise ValueError("Invalid email")
-        return v
-
-@tool
-def register_user(data: ToolInput) -> str:
-    """Register a new user."""
-    return f"Registered {data.email}, age {data.age}"
-```
-
-## Links to Full Documentation
+## Links to Documentation
 
 - [Tools Overview](https://docs.langchain.com/oss/python/langchain/tools)
-- [Tool Calling Guide](https://docs.langchain.com/oss/python/langchain/models)
-- [All Tool Integrations](https://docs.langchain.com/oss/python/integrations/tools/index)
-- [Custom Tools](https://docs.langchain.com/oss/python/contributing/implement-langchain)
+- [Tool Integrations](https://docs.langchain.com/oss/python/integrations/tools/index)
+- [Custom Tools Guide](https://docs.langchain.com/oss/python/integrations/chat/openai)

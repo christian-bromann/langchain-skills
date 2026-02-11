@@ -1,69 +1,65 @@
 ---
 name: langchain-structured-output
-description: Configure structured output for LangChain agents using response formats, Pydantic models, JSON schemas, and validation for Python.
+description: Get structured, validated output from LangChain agents and models using Pydantic schemas, type-safe responses, and automatic validation
 language: python
 ---
 
 # langchain-structured-output (Python)
 
----
-name: langchain-structured-output
-description: Configure structured output for LangChain agents using response formats, Pydantic models, JSON schemas, and validation for Python.
-language: python
----
-
-# LangChain Structured Output (Python)
-
 ## Overview
 
-Structured output allows agents to return data in specific, predictable formats instead of free-form text. This enables reliable data extraction, validation, and downstream processing.
+Structured output transforms unstructured model responses into validated, typed data. Instead of parsing free text, you get Python objects conforming to your schema - perfect for extracting data, building forms, or integrating with downstream systems.
 
-**Key concepts:**
-- **Response format**: Define schemas using Pydantic, TypedDict, or JSON Schema
-- **Validation**: Automatic validation with Pydantic models
-- **Tool strategy**: Use tool calling for structured output
-- **Provider strategy**: Use native structured output features
+**Key Concepts:**
+- **response_format**: Define expected output schema
+- **Pydantic Validation**: Type-safe schemas with automatic validation
+- **with_structured_output()**: Model method for direct structured output
+- **Tool Strategy**: Uses tool calling under the hood for models without native support
 
 ## Decision Tables
 
-### Choosing output schema format
+### When to Use Structured Output
 
-| Format | Best For | Validation | Type Safety |
-|--------|----------|-----------|-------------|
-| Pydantic | Production apps | ✅ Built-in | ✅ Excellent |
-| TypedDict | Simple cases | ❌ Manual | ✅ Good |
-| JSON Schema | Interoperability | ❌ Manual | ❌ Limited |
+| Use Case | Use Structured Output? | Why |
+|----------|----------------------|-----|
+| Extract contact info, dates, etc. | ✅ Yes | Reliable data extraction |
+| Form filling | ✅ Yes | Validate all required fields |
+| API integration | ✅ Yes | Type-safe responses |
+| Classification tasks | ✅ Yes | Enum validation |
+| Open-ended Q&A | ❌ No | Free-form text is fine |
+| Creative writing | ❌ No | Don't constrain creativity |
 
-### Tool strategy vs provider strategy
+### Schema Options
 
-| Strategy | How It Works | Compatibility | Performance |
-|----------|-------------|---------------|-------------|
-| Tool Strategy | Uses tool calling | ✅ Most models | ⚠️ Slight overhead |
-| Provider Strategy | Native feature | ⚠️ Provider-specific | ✅ Faster |
+| Schema Type | When to Use | Example |
+|-------------|-------------|---------|
+| Pydantic model | Python projects (recommended) | `class Model(BaseModel):` |
+| TypedDict | Simpler typing | `class Data(TypedDict):` |
+| JSON Schema | Interoperability | `{"type": "object", ...}` |
+| Union types | Multiple possible formats | `Union[Schema1, Schema2]` |
 
 ## Code Examples
 
-### Basic Structured Output with Pydantic
+### Basic Structured Output with Agent
 
 ```python
 from langchain.agents import create_agent
 from pydantic import BaseModel, Field
 
 class ContactInfo(BaseModel):
-    """Contact information schema."""
-    name: str = Field(..., description="Person's full name")
-    email: str = Field(..., description="Email address")
-    phone: str = Field(..., description="Phone number")
+    name: str
+    email: str = Field(pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    phone: str
 
 agent = create_agent(
-    model="gpt-4o",
-    response_format=ContactInfo
+    model="gpt-4.1",
+    response_format=ContactInfo,
 )
 
 result = agent.invoke({
     "messages": [{
         "role": "user",
-        "content": "Extract contact: John Doe, john@example.com, (555) 123-4567"
+        "content": "Extract: John Doe, john@example.com, (555) 123-4567"
     }]
 })
 
@@ -71,318 +67,303 @@ print(result["structured_response"])
 # ContactInfo(name='John Doe', email='john@example.com', phone='(555) 123-4567')
 ```
 
-### Nested Schema
+### Model Direct Structured Output
 
 ```python
-from pydantic import BaseModel, Field
-
-class Address(BaseModel):
-    """Address information."""
-    street: str
-    city: str
-    zip_code: str
-
-class Person(BaseModel):
-    """Person with address."""
-    name: str
-    age: int = Field(..., ge=0, le=150)
-    address: Address
-    hobbies: list[str]
-
-agent = create_agent(
-    model="gpt-4o",
-    response_format=Person
-)
-```
-
-### Using TypedDict
-
-```python
-from langchain.agents import create_agent
-from typing_extensions import TypedDict, Annotated
-
-class ProductInfo(TypedDict):
-    """Product information."""
-    name: Annotated[str, ..., "Product name"]
-    price: Annotated[float, ..., "Price in USD"]
-    in_stock: Annotated[bool, ..., "Availability"]
-
-agent = create_agent(
-    model="gpt-4o",
-    response_format=ProductInfo
-)
-```
-
-### JSON Schema (Raw)
-
-```python
-from langchain.agents import create_agent
-
-agent = create_agent(
-    model="gpt-4o",
-    response_format={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Product name"},
-            "price": {"type": "number", "description": "Price in USD"},
-            "in_stock": {"type": "boolean", "description": "Availability"}
-        },
-        "required": ["name", "price"]
-    }
-)
-```
-
-### With Tool Calling Strategy
-
-```python
-from langchain.agents import create_agent
-from langchain.agents.structured_output import ToolStrategy
-from pydantic import BaseModel, Field
-
-class MovieInfo(BaseModel):
-    """Movie details."""
-    title: str = Field(..., description="Movie title")
-    year: int = Field(..., description="Release year")
-    director: str = Field(..., description="Director name")
-    rating: float = Field(..., ge=0, le=10, description="Rating out of 10")
-
-agent = create_agent(
-    model="gpt-4o",
-    tools=[search_tool],
-    response_format=ToolStrategy(MovieInfo)
-)
-
-# Agent can use tools AND return structured output
-result = agent.invoke({
-    "messages": [{"role": "user", "content": "Search for Inception details"}]
-})
-
-print(result["structured_response"])
-```
-
-### Error Handling for Validation
-
-```python
-from pydantic import BaseModel, Field, field_validator
-
-class StrictData(BaseModel):
-    """Data with strict validation."""
-    age: int = Field(..., ge=0, le=120)
-    email: str
-    
-    @field_validator("email")
-    def validate_email(cls, v):
-        if "@" not in v:
-            raise ValueError("Invalid email format")
-        return v
-
-agent = create_agent(
-    model="gpt-4o",
-    response_format=StrictData
-)
-
-# If model provides invalid data, validation error triggers retry
-```
-
-### Using with Model's with_structured_output
-
-```python
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 class Movie(BaseModel):
     """Movie information."""
-    title: str = Field(..., description="Movie title")
-    year: int = Field(..., description="Release year")
-    director: str = Field(..., description="Director name")
+    title: str = Field(description="Movie title")
+    year: int = Field(description="Release year")
+    director: str
+    rating: float = Field(ge=0, le=10)
 
-model = init_chat_model("gpt-4o")
-model_with_structure = model.with_structured_output(Movie)
+model = ChatOpenAI(model="gpt-4.1")
+structured_model = model.with_structured_output(Movie)
 
-response = model_with_structure.invoke("Tell me about Inception")
+response = structured_model.invoke("Tell me about Inception")
 print(response)
-# Movie(title='Inception', year=2010, director='Christopher Nolan')
+# Movie(title="Inception", year=2010, director="Christopher Nolan", rating=8.8)
 ```
 
-### Include Raw Message
+### Complex Nested Schema
 
 ```python
-from langchain.chat_models import init_chat_model
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import List
 
-class Answer(BaseModel):
-    """Simple answer."""
-    answer: str
+class Address(BaseModel):
+    street: str
+    city: str
+    state: str
+    zip: str
 
-model = init_chat_model("gpt-4o")
-model_with_structure = model.with_structured_output(Answer, include_raw=True)
+class Person(BaseModel):
+    name: str
+    age: int = Field(gt=0)
+    email: str
+    address: Address
+    tags: List[str] = Field(default_factory=list)
 
-response = model_with_structure.invoke("What is 2+2?")
-print(response)
-# {
-#     'raw': AIMessage(...),
-#     'parsed': Answer(answer='4')
-# }
+agent = create_agent(
+    model="gpt-4.1",
+    response_format=Person,
+)
 ```
 
-### Method Parameter (Provider vs Function Calling)
+### Enum and Literal Types
+
+```python
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class Classification(BaseModel):
+    category: Literal["urgent", "normal", "low"]
+    sentiment: Literal["positive", "neutral", "negative"]
+    confidence: float = Field(ge=0, le=1)
+
+agent = create_agent(
+    model="gpt-4.1",
+    response_format=Classification,
+)
+
+result = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": "Classify: This is extremely important and I'm very happy!"
+    }]
+})
+# Classification(category="urgent", sentiment="positive", confidence=0.95)
+```
+
+### Optional Fields and Defaults
+
+```python
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+class Event(BaseModel):
+    title: str
+    date: str
+    location: Optional[str] = None
+    attendees: List[str] = Field(default_factory=list)
+    confirmed: bool = False
+```
+
+### Union Types (Multiple Schemas)
+
+```python
+from pydantic import BaseModel
+from typing import Union, Literal
+
+class EmailContact(BaseModel):
+    type: Literal["email"]
+    to: str
+    subject: str
+
+class PhoneContact(BaseModel):
+    type: Literal["phone"]
+    number: str
+    message: str
+
+ContactMethod = Union[EmailContact, PhoneContact]
+
+agent = create_agent(
+    model="gpt-4.1",
+    response_format=ContactMethod,
+)
+# Model chooses which schema based on input
+```
+
+### Array Extraction
+
+```python
+from pydantic import BaseModel
+from typing import List, Optional, Literal
+
+class Task(BaseModel):
+    title: str
+    priority: Literal["high", "medium", "low"]
+    due_date: Optional[str] = None
+
+class TaskList(BaseModel):
+    tasks: List[Task]
+
+agent = create_agent(
+    model="gpt-4.1",
+    response_format=TaskList,
+)
+
+result = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": "Extract tasks: 1. Fix bug (high priority, due tomorrow) 2. Update docs"
+    }]
+})
+```
+
+### Include Raw AIMessage
 
 ```python
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-class Data(BaseModel):
-    """Data schema."""
-    value: str
+class Person(BaseModel):
+    name: str
+    age: int
 
-model = ChatOpenAI(model="gpt-4o")
+model = ChatOpenAI(model="gpt-4.1")
+structured_model = model.with_structured_output(Person, include_raw=True)
 
-# Use provider's native structured output
-structured_json_schema = model.with_structured_output(
-    Data,
-    method="json_schema"
-)
-
-# Use function calling (more compatible)
-structured_function = model.with_structured_output(
-    Data,
-    method="function_calling"
-)
-
-# JSON mode (less strict)
-structured_json_mode = model.with_structured_output(
-    Data,
-    method="json_mode"
-)
+response = structured_model.invoke("Person: Alice, 30 years old")
+print(response)
+# {
+#   "raw": AIMessage(...),
+#   "parsed": Person(name="Alice", age=30)
+# }
 ```
 
-### Optional Fields
+### TypedDict Alternative
 
 ```python
-from pydantic import BaseModel, Field
-from typing import Optional
+from typing_extensions import TypedDict, Annotated
+from langchain.agents import create_agent
 
-class PersonInfo(BaseModel):
-    """Person information with optional fields."""
-    name: str = Field(..., description="Full name")
-    age: Optional[int] = Field(None, description="Age if mentioned")
-    occupation: Optional[str] = Field(None, description="Job if mentioned")
+class ContactDict(TypedDict):
+    """Contact information."""
+    name: Annotated[str, ..., "Person's full name"]
+    email: Annotated[str, ..., "Email address"]
+    phone: Annotated[str, ..., "Phone number"]
 
 agent = create_agent(
-    model="gpt-4o",
-    response_format=PersonInfo
+    model="gpt-4.1",
+    response_format=ContactDict,
 )
+
+result = agent.invoke({"messages": [{"role": "user", "content": "..."}]})
+# Returns dict, not Pydantic model
+print(type(result["structured_response"]))  # <class 'dict'>
+```
+
+### Error Handling
+
+```python
+from langchain.agents import create_agent
+from pydantic import BaseModel, Field, ValidationError
+
+class StrictSchema(BaseModel):
+    email: str = Field(pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    age: int = Field(ge=0, le=120)
+
+agent = create_agent(
+    model="gpt-4.1",
+    response_format=StrictSchema,
+)
+
+try:
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": "Email: invalid, Age: -5"}]
+    })
+except ValidationError as e:
+    print(f"Validation failed: {e}")
 ```
 
 ## Boundaries
 
-### ✅ What Structured Output CAN Do
+### What You CAN Configure
 
-- **Enforce specific formats**: JSON objects matching schemas
-- **Validate data**: Automatic type checking with Pydantic
-- **Extract information**: Pull structured data from text
-- **Type-safe responses**: Full Python type hints
-- **Handle complex schemas**: Nested models, unions, optionals
-- **Combine with tools**: Use tools then return structured output
-- **Custom validation**: Pydantic validators for business logic
+✅ **Schema structure**: Any valid Pydantic model
+✅ **Field validation**: Types, ranges, regex, etc.
+✅ **Optional vs required**: Control field presence
+✅ **Nested objects**: Complex hierarchies
+✅ **Arrays**: Lists of items
+✅ **Enums**: Restricted values with Literal
 
-### ❌ What Structured Output CANNOT Do
+### What You CANNOT Configure
 
-- **Guarantee factual accuracy**: Models can still hallucinate
-- **Handle streaming**: Returns complete objects, not streams
-- **Modify schema dynamically**: Schema is fixed at creation
-- **Access external data**: Still need tools for external sources
-- **Replace all validation**: May need additional checks
+❌ **Model reasoning**: Can't control how model generates data
+❌ **Guarantee 100% accuracy**: Model may still make mistakes
+❌ **Force valid data if context lacks it**: Model can't invent missing info
 
 ## Gotchas
 
-### 1. **Field Descriptions Matter**
+### 1. Accessing Response Wrong
 
 ```python
-# ❌ Missing descriptions
-class BadSchema(BaseModel):
-    name: str  # No description
-    age: int
+# ❌ Problem: Accessing wrong key
+result = agent.invoke(input)
+print(result["response"])  # KeyError!
 
-# ✅ Include descriptions for better results
-class GoodSchema(BaseModel):
-    """Person information."""
-    name: str = Field(..., description="Full name of the person")
-    age: int = Field(..., description="Age in years")
+# ✅ Solution: Use structured_response
+print(result["structured_response"])
 ```
 
-### 2. **Validation Errors Trigger Retries**
+### 2. Missing Descriptions
 
 ```python
-# When validation fails, the agent retries with error message
-class StrictSchema(BaseModel):
-    email: str = Field(..., pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$")
+# ❌ Problem: No field descriptions
+class Data(BaseModel):
+    date: str  # What format?
+    amount: float  # What unit?
 
-# If model returns invalid email, it gets error and retries automatically
+# ✅ Solution: Add descriptions via Field
+class Data(BaseModel):
+    date: str = Field(description="Date in YYYY-MM-DD format")
+    amount: float = Field(description="Amount in USD")
 ```
 
-### 3. **Pydantic v2 Required**
+### 3. Over-constraining
 
 ```python
-# LangChain requires Pydantic v2
+import re
+
+# ❌ Problem: Too strict for model
+class Data(BaseModel):
+    code: str = Field(pattern=r"^[A-Z]{2}-\d{4}-[A-Z]{3}$")  # Very specific!
+
+# ✅ Solution: Use looser validation or describe format
+class Data(BaseModel):
+    code: str = Field(description="Format: XX-0000-XXX (letters and numbers)")
+```
+
+### 4. Pydantic v1 vs v2
+
+```python
+# Pydantic v2 (current)
 from pydantic import BaseModel, Field
 
-# Make sure you're using Pydantic v2 syntax
-class Schema(BaseModel):
-    name: str = Field(..., description="Name")
-    # Use Field(...) instead of deprecated syntax
-```
+class Data(BaseModel):
+    value: int = Field(ge=0, le=100)
 
-### 4. **TypedDict Has No Runtime Validation**
-
-```python
-# ❌ TypedDict doesn't validate at runtime
-from typing_extensions import TypedDict
-
-class Data(TypedDict):
-    age: int
-
-# No validation happens - invalid data passes through
-
-# ✅ Use Pydantic for validation
-from pydantic import BaseModel
+# Pydantic v1 (legacy)
+from pydantic import BaseModel, Field
 
 class Data(BaseModel):
-    age: int  # Validates at runtime
+    value: int = Field(..., ge=0, le=100)  # Note the ...
+    
+    class Config:
+        # v1 config
+        pass
 ```
 
-### 5. **JSON Schema Needs Manual Validation**
+### 5. Not Using Correct Type Hints
 
 ```python
-# ❌ JSON schema doesn't auto-validate
-agent = create_agent(
-    model="gpt-4o",
-    response_format={"type": "object", "properties": {...}}
-)
-# Response may not match schema perfectly
+# ❌ Problem: Missing type hints
+class Data(BaseModel):
+    items = []  # No type hint!
 
-# ✅ Use Pydantic for automatic validation
-agent = create_agent(
-    model="gpt-4o",
-    response_format=PydanticModel
-)
+# ✅ Solution: Always use type hints
+from typing import List
+
+class Data(BaseModel):
+    items: List[str] = Field(default_factory=list)
 ```
 
-### 6. **Not All Models Support Structured Output**
+## Links to Documentation
 
-```python
-# ❌ Older models may not support it well
-model = init_chat_model("gpt-3.5-turbo")
-structured = model.with_structured_output(Schema)  # May fail
-
-# ✅ Use recent models with good structured output support
-model = init_chat_model("gpt-4o")
-structured = model.with_structured_output(Schema)
-```
-
-## Links to Full Documentation
-
-- [Structured Output Guide](https://docs.langchain.com/oss/python/langchain/structured-output)
+- [Structured Output Overview](https://docs.langchain.com/oss/python/langchain/structured-output)
 - [Model Structured Output](https://docs.langchain.com/oss/python/langchain/models)
-- [Pydantic Models](https://docs.pydantic.dev/)
-- [Agents with Structured Output](https://docs.langchain.com/oss/python/langchain/agents)
+- [Agent Structured Output](https://docs.langchain.com/oss/python/langchain/agents)
