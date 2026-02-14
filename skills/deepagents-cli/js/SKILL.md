@@ -58,6 +58,58 @@ Locations:
 - Global: `~/.deepagents/<agent_name>/skills/`
 - Project: `.deepagents/skills/`
 
+## Code Examples
+
+### Programmatic CLI Usage
+
+```typescript
+import { createDeepAgent, FilesystemBackend } from "deepagents";
+import { MemorySaver } from "@langchain/langgraph";
+
+// Create an agent with the same capabilities as the CLI
+const agent = await createDeepAgent({
+  name: "my-assistant",
+  backend: new FilesystemBackend({ rootDir: ".", virtualMode: true }),
+  checkpointer: new MemorySaver(),
+  skills: ["./.deepagents/skills/"],
+});
+
+// Invoke like the CLI would
+const result = await agent.invoke(
+  {
+    messages: [{ role: "user", content: "Refactor the auth module" }],
+  },
+  { configurable: { thread_id: "session-1" } }
+);
+```
+
+### Managing Skills via CLI
+
+```bash
+# Create a new global skill
+deepagents skills create my-skill
+
+# Create a project-scoped skill
+cd /path/to/project
+deepagents skills create my-skill --project
+
+# List available skills
+deepagents skills list
+```
+
+### Managing Memory via CLI
+
+```bash
+# Reset agent memory
+deepagents reset --agent my-assistant
+
+# List conversation threads
+deepagents threads list
+
+# Delete a specific thread
+deepagents threads delete session-1
+```
+
 ## Decision Table: Memory vs Skills
 
 | Content | Location | Why |
@@ -66,6 +118,25 @@ Locations:
 | Project arch | AGENTS.md (project) | Project context |
 | Testing workflow | Skill | Task-specific |
 | Large docs | Skill | On-demand loading |
+
+## Boundaries
+
+### What CAN Configure
+
+✅ Agent name and personality via AGENTS.md
+✅ Project-specific conventions via project AGENTS.md
+✅ Custom skills (global or project-scoped)
+✅ Model selection via environment variables
+✅ Thread management (list, delete)
+✅ API keys for web search and model providers
+
+### What CANNOT Configure
+
+❌ Core CLI commands (fixed set)
+❌ Built-in tool names (ls, read_file, write_file, etc.)
+❌ Middleware order in CLI mode
+❌ AGENTS.md file format (must be markdown)
+❌ Skills protocol format (must follow SKILL.md spec)
 
 ## Gotchas
 

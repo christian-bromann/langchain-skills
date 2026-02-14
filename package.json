@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "generate-skills": "bun run src/index.ts"
+    "generate-skills": "bun run src/index.ts",
+    "eval": "bunx vitest run --config ls.vitest.config.ts",
+    "eval:structural": "bunx vitest run --config ls.vitest.config.ts evals/structural.eval.ts",
+    "eval:quality": "bunx vitest run --config ls.vitest.config.ts evals/agent-quality.eval.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -24,8 +27,10 @@
     "@opentui/core": "^0.1.75",
     "@opentui/react": "^0.1.75",
     "deepagents": "^1.6.1",
+    "langsmith": "^0.5.4",
     "react": "^19.2.4",
     "turndown": "^7.2.2",
+    "vitest": "^4.0.18",
     "zod": "^4.3.6"
   }
 }

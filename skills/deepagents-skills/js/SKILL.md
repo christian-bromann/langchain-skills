@@ -20,7 +20,7 @@ Skills provide specialized capabilities through **progressive disclosure**: agen
 | Task-specific | General preferences |
 | Large docs | Compact context |
 
-## Using Skills
+## Code Examples
 
 ### With FilesystemBackend
 
@@ -131,6 +131,24 @@ app.get("/users/:id", async (req, res) => {
 });
 \`\`\`
 ```
+
+## Boundaries
+
+### What CAN Configure
+
+✅ Skill directories (global and project-scoped)
+✅ Skill content and structure within SKILL.md format
+✅ Backend type for skill storage (Filesystem, Store, State)
+✅ Skill descriptions for matching
+✅ Multiple skill directories per agent
+
+### What CANNOT Configure
+
+❌ SKILL.md file format (must follow Agent Skills protocol)
+❌ Frontmatter fields (name and description are required)
+❌ Progressive disclosure behavior (always on-demand)
+❌ Skill file name (must be SKILL.md)
+❌ Skill matching algorithm (handled by the framework)
 
 ## Gotchas
 

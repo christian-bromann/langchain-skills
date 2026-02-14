@@ -6,7 +6,7 @@ language: js
 
 # deepagents-overview (JavaScript/TypeScript)
 
-## What are Deep Agents?
+## Overview
 
 Deep Agents are an opinionated agent framework built on top of LangChain and LangGraph, designed for complex, multi-step tasks. They come "batteries included" with built-in capabilities:
 
@@ -28,7 +28,7 @@ Deep Agents use an "agent harness" architecture - the same core tool-calling loo
 | Persistent memory across sessions | Ephemeral, single-session work |
 | CLI or coding assistant use cases | Simple API or chat applications |
 
-## Creating a Deep Agent
+## Code Examples
 
 ### Basic Agent Creation
 
