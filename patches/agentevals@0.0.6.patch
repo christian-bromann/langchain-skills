@@ -1,0 +1,27 @@
+diff --git a/node_modules/agentevals/.bun-tag-9560257c9b3eed55 b/.bun-tag-9560257c9b3eed55
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/graph_trajectory/utils.js b/dist/graph_trajectory/utils.js
+index ae996d4e7d57fd916ae26cc58ba79c0a4b9e2eea..d03b85a41bb2415e38f1d8e5015511e12a05b6b0 100644
+--- a/dist/graph_trajectory/utils.js
++++ b/dist/graph_trajectory/utils.js
+@@ -1,5 +1,6 @@
+ import { isBaseMessage } from "@langchain/core/messages";
+-import { _convertMessagesToOpenAIParams } from "@langchain/openai";
++import { convertMessagesToCompletionsMessageParams } from "@langchain/openai";
++const _convertMessagesToOpenAIParams = (msgs) => convertMessagesToCompletionsMessageParams({ messages: msgs });
+ export const extractLangGraphTrajectoryFromSnapshots = (snapshots) => {
+     const inputs = [];
+     const trajectory = {
+diff --git a/dist/utils.js b/dist/utils.js
+index b2457977ee5941d9b7798b7dc2185d24be110efb..b014767504e45effd6959cf36a53673aec4bd2da 100644
+--- a/dist/utils.js
++++ b/dist/utils.js
+@@ -1,5 +1,6 @@
+ import { isBaseMessage } from "@langchain/core/messages";
+-import { _convertMessagesToOpenAIParams } from "@langchain/openai";
++import { convertMessagesToCompletionsMessageParams } from "@langchain/openai";
++const _convertMessagesToOpenAIParams = (msgs) => convertMessagesToCompletionsMessageParams({ messages: msgs });
+ import { _runEvaluator as baseRunEvaluator, } from "openevals/utils";
+ export const _convertToOpenAIMessage = (message) => {
+     if (isBaseMessage(message)) {

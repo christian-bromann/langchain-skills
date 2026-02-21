@@ -7,9 +7,18 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "generate-skills": "bun run src/index.ts",
-    "eval": "bunx vitest run --config ls.vitest.config.ts",
-    "eval:structural": "bunx vitest run --config ls.vitest.config.ts evals/structural.eval.ts",
-    "eval:quality": "bunx vitest run --config ls.vitest.config.ts evals/agent-quality.eval.ts"
+    "eval": "bunx vitest run --config vitest.config.ts",
+    "eval:structural": "bunx vitest run --config vitest.config.ts evals/structural.eval.ts",
+    "eval:quality": "bunx vitest run --config vitest.config.ts evals/quality/",
+    "eval:quality:langchain": "bunx vitest run --config vitest.config.ts evals/quality/langchain-core.eval.ts",
+    "eval:quality:langgraph": "bunx vitest run --config vitest.config.ts evals/quality/langgraph.eval.ts",
+    "eval:quality:deepagents": "bunx vitest run --config vitest.config.ts evals/quality/deepagents.eval.ts",
+    "eval:quality:integrations": "bunx vitest run --config vitest.config.ts evals/quality/integrations.eval.ts",
+    "eval:quality:coding": "bunx vitest run --config vitest.config.ts evals/quality/coding-challenges.eval.ts",
+    "eval:quality:python": "bunx vitest run --config vitest.config.ts evals/quality/python-skills.eval.ts",
+    "eval:quality:negative": "bunx vitest run --config vitest.config.ts evals/quality/negative.eval.ts",
+    "eval:agent": "bunx vitest run --config vitest.config.ts evals/agent/",
+    "upload-dataset": "bun run evals/scripts/upload-dataset.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -26,11 +35,16 @@
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@opentui/core": "^0.1.75",
     "@opentui/react": "^0.1.75",
+    "agentevals": "^0.0.6",
     "deepagents": "^1.6.1",
     "langsmith": "^0.5.4",
+    "openevals": "^0.1.4",
     "react": "^19.2.4",
     "turndown": "^7.2.2",
     "vitest": "^4.0.18",
     "zod": "^4.3.6"
+  },
+  "patchedDependencies": {
+    "agentevals@0.0.6": "patches/agentevals@0.0.6.patch"
   }
 }

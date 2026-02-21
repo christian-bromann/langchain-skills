@@ -1,0 +1,159 @@
+name: Skill Evaluation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "src/**"
+      - "evals/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "src/**"
+      - "evals/**"
+  workflow_dispatch:
+    inputs:
+      eval_suite:
+        description: "Which eval suite to run"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - structural
+          - quality
+          - coding
+          - negative
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  LANGSMITH_TRACING: "true"
+  LANGSMITH_PROJECT: "skills-evals-ci"
+
+jobs:
+  structural:
+    name: Structural Evals
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.eval_suite == 'all' ||
+      github.event.inputs.eval_suite == 'structural'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run structural evals
+        run: bun run eval:structural
+        env:
+          GIT_SHA: ${{ github.sha }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+
+  quality:
+    name: Quality Evals
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.eval_suite == 'all' ||
+      github.event.inputs.eval_suite == 'quality'
+    strategy:
+      fail-fast: false
+      matrix:
+        category:
+          - langchain
+          - langgraph
+          - deepagents
+          - integrations
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run ${{ matrix.category }} quality evals
+        run: bun run eval:quality:${{ matrix.category }}
+        env:
+          GIT_SHA: ${{ github.sha }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+
+  coding:
+    name: Coding Challenge Evals
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.eval_suite == 'all' ||
+      github.event.inputs.eval_suite == 'coding'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run coding challenge evals
+        run: bun run eval:quality:coding
+        env:
+          GIT_SHA: ${{ github.sha }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+
+  negative:
+    name: Boundary Adherence Evals
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.eval_suite == 'all' ||
+      github.event.inputs.eval_suite == 'negative'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run boundary adherence evals
+        run: bun run eval:quality:negative
+        env:
+          GIT_SHA: ${{ github.sha }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+
+  summary:
+    name: Eval Summary
+    runs-on: ubuntu-latest
+    needs: [structural, quality, coding, negative]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.structural.result }}" = "failure" ]; then
+            echo "::error::Structural evals failed"
+            exit 1
+          fi
+          if [ "${{ needs.quality.result }}" = "failure" ]; then
+            echo "::warning::Quality evals had failures — check LangSmith for details"
+          fi
+          if [ "${{ needs.coding.result }}" = "failure" ]; then
+            echo "::warning::Coding challenge evals had failures — check LangSmith for details"
+          fi
+          if [ "${{ needs.negative.result }}" = "failure" ]; then
+            echo "::warning::Boundary adherence evals had failures — check LangSmith for details"
+          fi
+          echo "Eval run complete. View experiments at https://smith.langchain.com"

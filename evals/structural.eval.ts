@@ -114,6 +114,43 @@ ls.describe("skill structural quality", () => {
   );
 
   // --------------------------------------------------------------------------
+  // Section quality depth (warn-only, no hard failures)
+  // --------------------------------------------------------------------------
+  ls.test.each(skillDataset)(
+    "section quality depth",
+    async ({ inputs }) => {
+      const skill = await readSkill(inputs.skillPath);
+      const result = checkStructure(skill);
+
+      ls.logOutputs({
+        overviewMinWords: result.overviewMinWords,
+        codeExampleCount: result.codeExampleCount,
+        hasDecisionTable: result.hasDecisionTable,
+        hasValidLinks: result.hasValidLinks,
+        skillName: skill.frontmatter.name || inputs.skillPath,
+      });
+
+      const depthScore =
+        (result.overviewMinWords ? 0.25 : 0) +
+        (result.codeExampleCount >= 2 ? 0.25 : 0) +
+        (result.hasDecisionTable ? 0.25 : 0) +
+        (result.hasValidLinks ? 0.25 : 0);
+
+      ls.logFeedback({
+        key: "section_depth",
+        score: depthScore,
+      });
+
+      if (!result.overviewMinWords) {
+        console.warn(`${inputs.skillPath}: overview section has fewer than 50 words`);
+      }
+      if (result.codeExampleCount < 2) {
+        console.warn(`${inputs.skillPath}: only ${result.codeExampleCount} code blocks found (recommend 2+)`);
+      }
+    }
+  );
+
+  // --------------------------------------------------------------------------
   // Overall structural score
   // --------------------------------------------------------------------------
   ls.test.each(skillDataset)(
@@ -134,11 +171,16 @@ ls.describe("skill structural quality", () => {
       });
 
       if (!result.pass) {
-        // Log failures but don't hard-fail -- individual checks above will fail
         console.warn(
           `${inputs.skillPath} structural issues: ${result.failures.join(", ")}`
         );
       }
     }
   );
+}, {
+  metadata: {
+    skillVersion: process.env.GIT_SHA || "local",
+    model: "deterministic",
+    evalSuite: "structural-v2",
+  },
 });

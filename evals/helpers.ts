@@ -30,21 +30,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = resolve(__dirname, "../skills");
 
 /**
- * Discover all JS skill files under the skills/ directory.
- * Returns relative paths like "langchain-agents/js/SKILL.md".
+ * Discover skill files under the skills/ directory.
+ * Returns relative paths like "langchain-agents/js/SKILL.md" or "langchain-agents/python/SKILL.md".
  */
-export async function discoverSkillPaths(): Promise<string[]> {
+export async function discoverSkillPaths(
+  language: "js" | "python" | "both" = "js"
+): Promise<string[]> {
   const entries = await readdir(SKILLS_DIR, { withFileTypes: true });
   const paths: string[] = [];
+  const languages = language === "both" ? ["js", "python"] : [language];
+
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      const skillFile = join(entry.name, "js", "SKILL.md");
-      const fullPath = join(SKILLS_DIR, skillFile);
-      try {
-        await readFile(fullPath, "utf-8");
-        paths.push(skillFile);
-      } catch {
-        // No JS skill file in this directory, skip
+      for (const lang of languages) {
+        const skillFile = join(entry.name, lang, "SKILL.md");
+        const fullPath = join(SKILLS_DIR, skillFile);
+        try {
+          await readFile(fullPath, "utf-8");
+          paths.push(skillFile);
+        } catch {
+          // skip
+        }
       }
     }
   }
@@ -100,10 +106,10 @@ export async function readSkill(relativePath: string): Promise<Skill> {
 }
 
 /**
- * Discover and read all JS skill files.
+ * Discover and read all skill files.
  */
-export async function readAllSkills(): Promise<Skill[]> {
-  const paths = await discoverSkillPaths();
+export async function readAllSkills(language: "js" | "python" | "both" = "js"): Promise<Skill[]> {
+  const paths = await discoverSkillPaths(language);
   return Promise.all(paths.map(readSkill));
 }
 
